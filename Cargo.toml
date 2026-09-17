@@ -1,0 +1,29 @@
+[package]
+name = "ru-dbviewer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+description = "Native SQLite and PostgreSQL database viewer for Runyte"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.38", features = ["bundled", "hooks", "column_decltype"] }
+tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+futures-util = "0.3"
+sqlparser = "0.59"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

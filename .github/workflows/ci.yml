@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            pg: '17'
+          - os: ubuntu-24.04-arm
+            pg: '16'
+          - os: macos-15
+            pg: '17'
+          - os: macos-15-intel
+            pg: '16'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install jsonschema
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Install PostgreSQL (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }}
+          echo "PG_BIN=/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_ENV"
+      - name: Install PostgreSQL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@${{ matrix.pg }}
+          echo "PG_BIN=$(brew --prefix postgresql@${{ matrix.pg }})/bin" >> "$GITHUB_ENV"
+      - name: Check out pinned Runyte host
+        uses: actions/checkout@v4
+        with:
+          repository: runyte/runyte
+          ref: cd711f294716a52a800d701016374026036c9b71
+          path: .host
+      - name: Build pinned host
+        shell: bash
+        run: |
+          cargo build --locked --manifest-path .host/Cargo.toml
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked --version 0.9.0
+      - name: Behavior coverage (Rust, wire, PostgreSQL, native editor)
+        shell: bash
+        run: |
+          source <(cargo llvm-cov show-env --sh)
+          cargo clean -p ru-dbviewer
+          cargo test --locked
+          python tests/wire.py
+          python scripts/postgres_tests.py
+          RUNYTE_BIN="$PWD/.host/target/debug/runyte" python tests/native.py
+          cargo llvm-cov report --summary-only --fail-under-lines 75
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo check --locked --all-targets
