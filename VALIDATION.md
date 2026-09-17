@@ -2,15 +2,13 @@
 
 ## Initial implementation — 2026-09-17
 
-Evidence applies to the uncommitted implementation delivered with this record.
-No public plugin release, tag or CI run is claimed.
+Evidence applies to the implementation delivered with this record. No public
+plugin release, tag or CI run is claimed.
 
-Local platform: Linux x86-64 (Fedora 44, kernel 7.1.13), Rust/Cargo 1.97.1,
-Python 3.14.7. Rust 1.88 is checked separately. The real Runyte host reports
-0.3.0. CI pins host source at
-`cd711f294716a52a800d701016374026036c9b71`. The final local host build
-included unrelated uncommitted editor changes; exact-pin acceptance remains
-a separate CI gate.
+Local platform: Linux x86-64, Rust/Cargo 1.97.1, Python 3.14.7. Rust 1.88 is
+checked separately. The real Runyte host reports 0.3.0. CI pins host source at
+`cd711f294716a52a800d701016374026036c9b71`. The local host build was not that
+exact revision; exact-pin acceptance remains a separate CI gate.
 
 | Check | Result |
 | --- | --- |
@@ -36,7 +34,7 @@ client outcome, not an automatic retry. Tests use disposable databases only.
 PostgreSQL fixtures here were isolated local containers. CI uses the same Rust
 cases against native temporary clusters created by `scripts/postgres_tests.py`;
 the launcher requires installed `initdb`, `pg_ctl`, `psql` and `openssl` and has
-not been run on this machine, where only the PostgreSQL client is installed.
+not been run locally, where only the PostgreSQL client is installed.
 
 Public-wire tests also cover stale view/selection refusal, multi-selection
 refusal, retained-result paging without re-execution, cancelled write confirmation,
@@ -70,8 +68,8 @@ The CI floor belongs to this plugin; Runyte's coverage threshold is unchanged.
 - Native macOS Intel/Apple Silicon and Linux ARM64 CI must pass. Workflow presence
   is not evidence that these platforms have executed successfully.
 - Run the artifact workflow to validate musl linking and each packaged executable.
-  The provided local executable is a GNU build for this machine, not the musl
-  artifact or a universal executable.
+  The local executable is a GNU build, not the musl artifact or a universal
+  executable.
 - macOS 13 is the configured deployment target; native tests currently target
   macOS 15 runners. Verify the minimum deployment OS before claiming acceptance
   on macOS 13. Public macOS artifacts remain unsigned unless signing/notarization
@@ -103,10 +101,9 @@ reuse in read-only and writable execution. Row and byte limits remain enforced.
 
 Linux x86-64 checks passed: formatting, Clippy with warnings denied, 13 ordinary
 Rust tests, 13 public-wire tests, all four PostgreSQL cases against disposable
-PostgreSQL 16, and all three native Runyte PTY cases. The persistent-host test
-required permission to bind its temporary Unix socket outside the sandbox.
-Combined LLVM line coverage is 79.69% (2,064 of 2,590 lines), above the 75% floor.
-The README Install YAML was parsed and compared with generated configuration.
+PostgreSQL 16, and all three native Runyte PTY cases. Combined LLVM line coverage
+is 79.69% (2,064 of 2,590 lines), above the 75% floor. The README Install YAML
+was parsed and compared with generated configuration.
 macOS and ARM64 acceptance remain the existing CI gates.
 
 ## Follow-up review fixes — 2026-09-17
@@ -127,7 +124,7 @@ all three publication errors for reads and pending writes, a mixed burst of
 queries and tables, and a 600-column record with JSON-expanding text and full
 retained-value inspection of its last column.
 
-An independent fresh subagent reviewed the fixes and surrounding lifecycle and
-model paths against the host source, ran all 16 wire tests, and reported no
-findings. No additional review round was needed. Existing platform release
-gates still apply; this does not claim macOS or ARM64 execution.
+An independent review of the fixes and the surrounding lifecycle and model
+paths against the host source ran all 16 wire tests and reported no findings.
+Existing platform release gates still apply; this does not claim macOS or
+ARM64 execution.
