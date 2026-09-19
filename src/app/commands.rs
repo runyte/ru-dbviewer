@@ -4,18 +4,52 @@ impl App {
     pub(super) async fn command(&mut self, ctx: Value) -> Result<Option<String>> {
         let authored = string(&ctx, "command")?;
         let command = authored
-            .strip_prefix("view-")
+            .strip_prefix("global-")
             .unwrap_or(&authored)
             .to_owned();
         // Even workspace commands invoked from a view must use its current revision.
         if ctx["view"].is_string() {
             self.context_view(&ctx)?;
         }
+        if matches!(
+            command.as_str(),
+            "filters"
+                | "add-filter"
+                | "edit-filter"
+                | "remove-filter"
+                | "toggle-filter"
+                | "clear-filters"
+                | "match"
+                | "apply-filters"
+                | "sort"
+                | "page-size"
+                | "browse-sql"
+        ) {
+            return self.browse_command(&ctx, &command).await;
+        }
         match command.as_str() {
             "open" => {
                 self.create(&ctx, Content::Connections).await?;
             }
-            "connect" => {
+            "connect" if authored == "connect" && ctx["view"].is_string() => {
+                let (_, content) = self.context_view(&ctx)?;
+                if !matches!(content, Content::Connections) {
+                    return Err("Select a saved database profile".into());
+                }
+                let name = self.target(&ctx)?;
+                if self.connections.contains_key(&name) {
+                    return Err("Database is already connected".into());
+                }
+                let profile = self
+                    .saved
+                    .profiles
+                    .iter()
+                    .find(|p| p.name() == name)
+                    .cloned()
+                    .ok_or("Profile no longer exists")?;
+                return self.password(&ctx, profile, false).await;
+            }
+            "connect" | "connect-new" => {
                 self.pick(
                     &ctx,
                     "Database type",
@@ -32,6 +66,34 @@ impl App {
                     Input::Use(string(&ctx, "buffer")?),
                 )
                 .await?;
+            }
+            "return" => {
+                let parent = ctx["buffer"]
+                    .as_str()
+                    .and_then(|b| self.sources.get(b))
+                    .cloned();
+                self.back(&ctx, parent).await?;
+            }
+            "transactions" => {
+                self.create(
+                    &ctx,
+                    Content::Transactions {
+                        entries: self.transaction_entries(),
+                    },
+                )
+                .await?;
+            }
+            "back" => {
+                let (id, _) = self.context_view(&ctx)?;
+                let parent = self.views[&id].parent.clone();
+                self.back(&ctx, parent).await?;
+            }
+            "raw" => {
+                let (id, mut content) = self.context_view(&ctx)?;
+                if let Content::Value { raw, .. } = &mut content {
+                    *raw = !*raw;
+                    self.publish(&id, content).await?;
+                }
             }
             "query" => {
                 let name = self.target(&ctx)?;
@@ -82,15 +144,51 @@ impl App {
                         &ctx,
                         "Disconnect database?",
                         "Roll back the pending transaction and disconnect?",
-                        Input::Disconnect(name),
+                        Input::Disconnect(name, c.generation),
                     )
                     .await?;
                 } else {
                     self.connections.remove(&name);
+                    self.refresh_status(&name).await?;
                 }
             }
             "activate" => {
                 let (_, content) = self.context_view(&ctx)?;
+                if let Content::Value {
+                    mut collapsed,
+                    name,
+                    data,
+                    row,
+                    column,
+                    raw,
+                } = content
+                {
+                    let path = ctx["rows"]
+                        .as_array()
+                        .filter(|a| a.len() == 1)
+                        .and_then(|a| a[0].as_str())
+                        .ok_or("Select one JSON node")?
+                        .to_owned();
+                    if path.len() > 256 || !path.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+                        return Err("Invalid JSON node".into());
+                    }
+                    if !collapsed.remove(&path) && collapsed.len() < 4096 {
+                        collapsed.insert(path);
+                    }
+                    self.publish(
+                        ctx["view"].as_str().unwrap(),
+                        Content::Value {
+                            collapsed,
+                            name,
+                            data,
+                            row,
+                            column,
+                            raw,
+                        },
+                    )
+                    .await?;
+                    return Ok(None);
+                }
                 let i = Self::selected(&ctx)?;
                 match content {
                     Content::Connections => {
@@ -107,6 +205,11 @@ impl App {
                                 .await;
                         }
                         return self.password(&ctx, p, false).await;
+                    }
+                    Content::Filters { .. }
+                    | Content::Transactions { .. }
+                    | Content::Value { .. } => {
+                        return Err("Use Tab for contextual actions".into());
                     }
                     Content::Catalog { name, tables, .. } => {
                         let t = tables.get(i).cloned().ok_or("Table no longer exists")?;
@@ -131,56 +234,29 @@ impl App {
                         record,
                         source,
                     } => {
-                        let id = string(&ctx, "view")?;
                         if let Some(r) = record {
-                            if self.views.len() >= 12 {
-                                return Err("Close a database view before opening another".into());
-                            }
-                            let cell = data
-                                .rows
+                            data.rows
                                 .get(r)
                                 .and_then(|r| r.get(i))
                                 .ok_or("Value no longer exists")?;
-                            let model = views::text_model(
-                                &format!("{name} · value {}", i + 1),
-                                "Retained value; truncation is explicit",
-                                vec![json!({"id":"value","text":cell.display(),"role":"ordinary"})],
-                                &["back"],
-                            );
-                            let v = self
-                                .rpc
-                                .request("view.create", json!({"model":model}))
-                                .await?;
-                            let new = string(&v, "view")?;
-                            self.views.insert(
-                                new.clone(),
-                                View {
-                                    published: tokio::time::Instant::now(),
-                                    revision: string(&v, "revision")?,
-                                    content: Content::Result {
-                                        name,
-                                        data,
-                                        table,
-                                        page,
-                                        offset,
-                                        columns,
-                                        record,
-                                        source,
-                                    },
+                            self.create(
+                                &ctx,
+                                Content::Value {
+                                    name,
+                                    data,
+                                    row: r,
+                                    column: i,
+                                    raw: false,
+                                    collapsed: Default::default(),
                                 },
-                            );
-                            self.rpc
-                                .request(
-                                    "pane.show",
-                                    json!({"invocation":ctx["invocation"],"view":new}),
-                                )
-                                .await?;
+                            )
+                            .await?;
                         } else {
                             if i >= data.rows.len() {
                                 return Err("Row no longer exists".into());
                             }
-                            self.publish(
-                                &id,
+                            self.create(
+                                &ctx,
                                 Content::Result {
                                     name,
                                     data,
@@ -197,22 +273,32 @@ impl App {
                     }
                 }
             }
-            "mode" => {
+            "profile-actions" => {
                 let name = self.target(&ctx)?;
-                self.ready(&name)?;
-                let write = !self.connections[&name].writable;
-                self.confirm(
+                let generation = self.connections.get(&name).map(|c| c.generation);
+                let choices = self.profile_choices(&name);
+                self.pick(
                     &ctx,
-                    &format!("Change access for {name}?"),
-                    if write {
-                        "Reconnect in writable mode? Every SQL execution will require confirmation."
-                    } else {
-                        "Reconnect in read-only mode?"
+                    &format!(
+                        "{} · {}",
+                        views::short(&name, 60),
+                        views::short(&self.state(&name), 80)
+                    ),
+                    choices.clone(),
+                    Input::ProfileActions {
+                        source: string(&ctx, "view")?,
+                        name,
+                        generation,
+                        choices,
                     },
-                    Input::Mode(name, write),
                 )
                 .await?;
             }
+            "mode" => {
+                let name = self.target(&ctx)?;
+                self.mode_picker(&ctx, name).await?;
+            }
+
             "acknowledge" => {
                 let (_, content) = self.context_view(&ctx)?;
                 let name = if matches!(content, Content::Connections) {
@@ -223,7 +309,10 @@ impl App {
                         .name()
                         .to_owned()
                 } else {
-                    self.target(&ctx)?
+                    content
+                        .name()
+                        .ok_or("Select an uncertain database")?
+                        .to_owned()
                 };
                 if self
                     .connections
@@ -232,28 +321,26 @@ impl App {
                 {
                     return Err("Resolve the live transaction first".into());
                 }
-                self.confirm(&ctx,"Acknowledge previous outcome?","Only continue after independently reviewing the database. This does not undo or replay SQL.",Input::Acknowledge(name)).await?;
+                if !self.saved.uncertain.contains(&name) {
+                    return Err("No uncertain outcome to acknowledge".into());
+                }
+                self.confirm(&ctx,"Acknowledge uncertain outcome?","Only continue after independently reviewing the database. This does not undo or replay SQL.",Input::Acknowledge(name)).await?;
             }
             "columns" => {
                 let (id, content) = self.context_view(&ctx)?;
-                if let Content::Result { data, .. } = content {
-                    self.form(
-                        &ctx,
-                        &format!("Visible columns: 1–{} (up to eight)", data.columns.len()),
-                        vec![field(
-                            "columns",
-                            "Comma-separated column numbers",
-                            "text",
-                            true,
-                        )],
-                        Input::Columns(id),
-                    )
-                    .await?;
+                if let Content::Result { data, columns, .. } = content {
+                    let selected = if columns.is_empty() {
+                        (0..data.columns.len().min(8)).collect()
+                    } else {
+                        columns
+                    };
+                    self.column_picker(&ctx, id, selected, String::new(), 0)
+                        .await?;
                 } else {
-                    return Err("Open query results first".into());
+                    return Err("Open rows first".into());
                 }
             }
-            "refresh" | "schema" | "system" | "next" | "previous" | "back" => {
+            "refresh" | "schema" | "system" | "next" | "previous" => {
                 let (id, content) = self.context_view(&ctx)?;
                 match content {
                     Content::Catalog {
@@ -346,6 +433,19 @@ impl App {
                             )
                             .await?;
                         }
+                    }
+                    Content::Filters { .. } => return Err("Apply filters or return to rows".into()),
+                    Content::Transactions { .. } => {
+                        self.publish(
+                            &id,
+                            Content::Transactions {
+                                entries: self.transaction_entries(),
+                            },
+                        )
+                        .await?;
+                    }
+                    Content::Value { .. } => {
+                        return Err("Retained value; use back to return".into());
                     }
                     Content::Review { .. } => {
                         return Err(

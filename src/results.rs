@@ -60,7 +60,8 @@ pub fn escape(s: &str) -> String {
 pub struct Data {
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<Cell>>,
-    pub affected: u64,
+    pub affected: Option<u64>,
+    pub order_keys: Vec<String>,
     pub truncated: bool,
     pub cells_truncated: bool,
     pub bytes: usize,

@@ -33,7 +33,7 @@ fn main() {
                 }
                 let executable =
                     std::env::current_exe().unwrap_or_else(|_| fail("Cannot locate executable"));
-                println!("{}",serde_json::to_string_pretty(&json!({"plugins":[{"id":id,"enabled":true,"api":"runyte-1","runyte":HOST_RANGE,"executable":executable,"args":[],"capabilities":CAPABILITIES}]})).unwrap());
+                println!("{}",serde_json::to_string_pretty(&json!({"plugins":[{"id":id,"enabled":true,"api":"runyte-1","runyte":HOST_RANGE,"executable":executable,"args":[],"capabilities":CAPABILITIES,"bindings":{"back":"-"}}]})).unwrap());
                 return;
             }
             _ => fail("Unknown arguments; use --help"),

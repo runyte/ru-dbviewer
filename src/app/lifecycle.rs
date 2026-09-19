@@ -4,6 +4,9 @@ impl App {
     pub(super) async fn release(&mut self, name: &str) {
         let lease = self.connections.get_mut(name).and_then(|c| {
             c.expiry = None;
+            c.started = None;
+            c.summary.clear();
+            c.affected = None;
             c.lease.take()
         });
         if let Some(lease) = lease {
@@ -15,10 +18,26 @@ impl App {
         }
     }
     pub(super) async fn complete(&mut self, done: Completion) -> Result<()> {
+        let done = match done {
+            Completion {
+                result: Work::Path(path),
+                ..
+            } => return self.complete_path(path).await,
+            other => other,
+        };
         let mut state = "succeeded";
         let mut failure = None;
 
+        let changed = match &done.result {
+            Work::Path(_) => unreachable!(),
+            Work::Connect(p, ..) => p.name().to_owned(),
+            Work::Catalog(n, ..)
+            | Work::Data(n, ..)
+            | Work::Settled(n, ..)
+            | Work::Failed(n, ..) => n.clone(),
+        };
         match done.result {
+            Work::Path(_) => unreachable!(),
             Work::Connect(p, write, result) => {
                 let was_cancelled = self
                     .connecting
@@ -46,8 +65,14 @@ impl App {
                                 cancel: CancellationToken::new(),
                                 lease: None,
                                 expiry: None,
+                                started: None,
+                                summary: String::new(),
+                                affected: None,
                             },
                         );
+                        if let Some(v) = self.views.get_mut(&done.view) {
+                            v.generation = Some(self.generation);
+                        }
                         self.publish(
                             &done.view,
                             Content::Catalog {
@@ -119,6 +144,7 @@ impl App {
                     c.job = None;
                     c.pending = c.lease.is_some();
                     if c.pending {
+                        c.affected = data.affected;
                         c.expiry = Some(
                             (tokio::time::Instant::now() + Duration::from_secs(300))
                                 .min(c.expiry.unwrap_or(tokio::time::Instant::now())),
@@ -132,6 +158,17 @@ impl App {
                 {
                     self.connections.remove(&name);
                 }
+                if let Some(v) = self.views.get_mut(&done.view)
+                    && table.is_some()
+                    && v.browse.columns.is_empty()
+                {
+                    v.browse.columns = data.columns.clone();
+                }
+                if let Some(v) = self.views.get_mut(&done.view)
+                    && table.is_some()
+                {
+                    v.browse.keys = data.order_keys.clone();
+                }
                 self.publish(
                     &done.view,
                     Content::Result {
@@ -140,7 +177,11 @@ impl App {
                         table,
                         page,
                         offset: 0,
-                        columns: vec![],
+                        columns: self
+                            .views
+                            .get(&done.view)
+                            .map(|v| v.browse.selected.clone())
+                            .unwrap_or_default(),
                         record: None,
                         source,
                     },
@@ -186,6 +227,7 @@ impl App {
                 failure = Some(error);
             }
         }
+        self.refresh_status(&changed).await?;
         if let Some(error) = failure
             && let Some(view) = self.views.get(&done.view)
         {
@@ -225,11 +267,22 @@ impl App {
             .views
             .iter()
             .filter(|(_, v)| {
-                v.content.name() == Some(name) || matches!(v.content, Content::Connections)
+                v.content.name() == Some(name)
+                    || matches!(
+                        v.content,
+                        Content::Connections | Content::Transactions { .. }
+                    )
             })
             .map(|(id, v)| (id.clone(), v.content.clone()))
             .collect::<Vec<_>>();
         for (id, c) in views {
+            let c = if matches!(c, Content::Transactions { .. }) {
+                Content::Transactions {
+                    entries: self.transaction_entries(),
+                }
+            } else {
+                c
+            };
             self.publish(&id, c).await?;
         }
         Ok(())

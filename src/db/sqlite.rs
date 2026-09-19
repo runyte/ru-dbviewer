@@ -69,6 +69,17 @@ impl Sqlite {
         cancel: CancellationToken,
         seconds: u64,
     ) -> Result<Data> {
+        self.execute_bound(sql, Vec::new(), write, cancel, seconds)
+            .await
+    }
+    pub async fn execute_bound(
+        &self,
+        sql: String,
+        parameters: Vec<String>,
+        write: bool,
+        cancel: CancellationToken,
+        seconds: u64,
+    ) -> Result<Data> {
         let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || {
             let c = connection
@@ -102,7 +113,9 @@ impl Sqlite {
                     ..Data::default()
                 };
                 let count = stmt.column_count();
-                let mut rows = stmt.query([]).map_err(error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params_from_iter(parameters.iter()))
+                    .map_err(error)?;
                 while let Some(row) = rows.next().map_err(error)? {
                     let mut cells = Vec::with_capacity(count);
                     for i in 0..count {
@@ -137,7 +150,11 @@ impl Sqlite {
                     }
                 }
                 drop(rows);
-                data.affected = if stmt.readonly() { 0 } else { c.changes() };
+                data.affected = if !stmt.readonly() && crate::query::affects_rows(&sql) {
+                    Some(c.changes())
+                } else {
+                    None
+                };
                 if write && data.truncated {
                     return Err("Result limit reached; writable transaction rolled back".into());
                 }

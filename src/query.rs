@@ -30,6 +30,18 @@ pub fn validate(sql: &str, postgres: bool) -> Result<()> {
         _=>Err("Use a query or transactional DML/DDL; scripts, COPY and transaction control are unsupported".into())
     }
 }
+/// SQLite changes() is undefined/stale for DDL and queries. Only DML supplies a count.
+pub fn affects_rows(sql: &str) -> bool {
+    Parser::parse_sql(&SQLiteDialect {}, sql)
+        .ok()
+        .is_some_and(|s| {
+            s.len() == 1
+                && matches!(
+                    s[0],
+                    Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)
+                )
+        })
+}
 pub fn ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }

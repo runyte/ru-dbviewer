@@ -52,6 +52,7 @@ source <(cargo llvm-cov show-env --sh)
 cargo clean -p ru-dbviewer
 cargo test --locked
 python3 tests/wire.py
+python3 tests/interactive.py
 PG_BIN=/path/to/postgresql/bin python3 scripts/postgres_tests.py
 RUNYTE_BIN=/path/to/runyte python3 tests/native.py
 cargo llvm-cov report --summary-only --fail-under-lines 75
@@ -128,3 +129,88 @@ An independent review of the fixes and the surrounding lifecycle and model
 paths against the host source ran all 16 wire tests and reported no findings.
 Existing platform release gates still apply; this does not claim macOS or
 ARM64 execution.
+
+
+## Interactive browsing — 2026-09-19
+
+Implemented the coordinating interactive-browsing plan in this plugin repository.
+The public API audit and the profile-actions/completion adaptations are recorded
+in [INTERACTIVE_BROWSING.md](INTERACTIVE_BROWSING.md). No Runyte host changes,
+publication or release were made.
+
+Actual local platform: Linux x86-64, Rust/Cargo 1.97.1, Python 3.14.7; the native
+Runyte host reports 0.3.0. The local host is not claimed to be the exact CI pin.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo test --locked` | 23 passed; five PostgreSQL cases run separately |
+| `cargo +1.88 check --locked --all-targets` | Passed |
+| `python3 tests/wire.py` | 17 passed, with outbound schema validation |
+| `python3 tests/interactive.py` | 10 passed |
+| PostgreSQL database cases | All five passed against disposable PostgreSQL 17.11 |
+| `tests/native.py` with local Runyte | All four real PTY tests passed |
+| Combined LLVM line coverage | 87.80% (4,046 of 4,608 lines), above the unchanged 75% floor |
+| Independent review | Findings fixed and re-reviewed until no actionable findings remained |
+
+The new behavior coverage exercises retained parent navigation and closed-parent
+fallback; named unsaved SQL and collision handling; selected-profile ownership
+through actions, forms and password prompts; connection generations; searchable
+columns; page size; ALL/ANY, disabled, edited, empty-string and NULL filters;
+sorting and independently executable generated SQL in both dialects; precise,
+duplicate-key, deep and bounded JSON inspection; path validation/completion;
+mode and disconnect protection; and transactions navigation. Real PTY acceptance
+covers completion, both back controls, execution of unsaved edits, explicit save,
+source return, writable review/commit, and persistent detach/reattach. These are
+automated native checks, not a claim of separate human manual acceptance.
+
+The PostgreSQL fixture used temporary certificates and container-owned data for
+TLS hostname/CA validation, client-certificate authentication, Unix sockets,
+cancellation, lost commit acknowledgement, and browsing semantics. The temporary
+container and certificate storage were removed afterward. The checked-in native
+cluster launcher remains a CI gate on this machine, which has client tools only.
+
+Review regressions cover retained original column ordinals after selection and
+refresh, generation-neutral database lists, bounded JSON row IDs and encoded
+models, matching profile-name limits, asynchronous path completion, cached browse
+ordering metadata, and source identity across chained input surfaces. A forced
+small-pipe test covers the nonblocking stdout short-write stall found during
+verification. Native fixture cleanup now waits for the captured persistent host
+to exit after its shutdown acknowledgement before removing temporary storage;
+this fixes an observed teardown race rather than retrying directory deletion.
+
+macOS, ARM64, exact-pinned-host CI and packaged release artifacts remain the
+existing acceptance gates. No new platform execution is claimed.
+
+
+## Negotiated row actions — 2026-09-19
+
+The coordinated host extension is the optional `view-row-actions` feature of
+`runyte-1`; it does not require a protocol epoch change. On supporting hosts,
+Databases publishes action lists per profile. The first Tab menu directly offers
+connect, query, mode, disconnect, settlement or recovery as applicable. The
+original per-profile picker remains the fallback when the feature is absent.
+No runtime changes were needed in ru-time or the bundled demonstration plugins.
+
+Actual Linux x86-64 checks passed: formatting, locked all-target Clippy with
+warnings denied, 23 ordinary Rust tests, 17 public-wire tests, 21 interactive
+cases covering both negotiated and legacy hosts, all five disposable PostgreSQL
+17.11 cases, and five real Runyte PTY cases. Rust 1.88 all-target checking also
+passed. The new native test requires direct row actions when
+`DBVIEWER_EXPECT_ROW_ACTIONS=1`; without it, the same test accepts the legacy
+profile-menu path for the pinned older CI host. Combined plugin coverage is
+88.11% (4,111 of 4,666 lines), above the unchanged 75% floor.
+
+The base schema and fixtures remain unchanged. Feature-aware wire tests layer
+the separately recorded row-action definition over that schema, while fallback
+tests still reject the new field. The host extension's required Rust checks,
+coverage, frozen-client and unchanged-plugin checks are recorded in Runyte's
+coverage register. Independent review found a transient-patch negotiation bypass;
+worker validation now checks each inserted/updated row before later operations
+can erase it. Re-review reported no remaining actionable findings.
+
+These are local development builds reporting Runyte 0.3.0, not a new published
+host release or exact-pin CI evidence. Existing macOS/ARM64 and packaging gates
+remain outstanding. Current feature behavior is documented in
+`INTERACTIVE_BROWSING.md` and the Runyte application contract.

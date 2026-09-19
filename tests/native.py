@@ -244,6 +244,16 @@ class NativeEditor:
         return self
 
     def __exit__(self, exception_type, *_):
+        # The stop acknowledgement precedes endpoint cleanup and plugin shutdown.
+        # Capture fixture-owned hosts before stopping them, then wait for their
+        # actual exit before deleting directories they can still write into.
+        host_pids = set()
+        if self.persistent:
+            for endpoint in self.root.rglob("endpoint.json"):
+                try:
+                    host_pids.add(int(json.loads(endpoint.read_text())["pid"]))
+                except FileNotFoundError:
+                    pass
         try:
             try:
                 # On failure, close the terminal sink before killing/reaping its
@@ -265,6 +275,20 @@ class NativeEditor:
                                              "--session-stop", str(self.project), "--force"],
                                             cwd=self.project, env=self.environment, capture_output=True,
                                             text=True, timeout=10)
+                    deadline = time.monotonic() + 10
+                    while host_pids:
+                        for pid in list(host_pids):
+                            process = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                                                     capture_output=True, text=True, timeout=2)
+                            state = process.stdout.strip()
+                            if process.returncode == 1 or state.startswith("Z"):
+                                host_pids.remove(pid)
+                            elif process.returncode != 0:
+                                raise RuntimeError(f"Cannot observe fixture host exit: {process.stderr}")
+                        if host_pids:
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("Fixture persistent host did not exit after stop")
+                            time.sleep(0.05)
                     if exception_type is None:
                         self.test.assertEqual(result.returncode, 0, result.stderr)
         finally:
@@ -276,7 +300,7 @@ class NativeTests(unittest.TestCase):
         editor.command("db-connect")
         editor.wait_for(lambda: editor.shows("Database type"))
         editor.send(b"\r")
-        editor.wait_for(lambda: editor.shows("SQLite connection"))
+        editor.wait_for(lambda: editor.shows("SQLite form"))
         editor.send(b"native\t"+str(editor.database).encode()+b"\r")
         editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
 
@@ -285,7 +309,7 @@ class NativeTests(unittest.TestCase):
             self.connect(editor)
             editor.send(b"ggj\r")
             editor.wait_for(lambda: editor.shows("native-first"))
-            editor.send(b"\r")
+            editor.send(b"ggjj\r")
             editor.wait_for(lambda: editor.shows("name [TEXT]: native-first"))
             editor.command("db-query")
             editor.wait_for(lambda: editor.shows("SELECT 1;"))
@@ -298,7 +322,9 @@ class NativeTests(unittest.TestCase):
         with NativeEditor(self) as editor:
             self.connect(editor)
             editor.send(b":plugin.dbviewer.mode\r")
-            editor.wait_for(lambda: editor.shows("Change access"))
+            editor.wait_for(lambda: editor.shows("Access mode"))
+            editor.send(b"READ AND WRITE\r")
+            editor.wait_for(lambda: editor.shows("Enable READ AND WRITE"))
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("WRITABLE") and editor.shows("main.items"))
             (editor.project/"write.sql").write_text("INSERT INTO items VALUES(3, 'native-write');\n")
@@ -317,6 +343,74 @@ class NativeTests(unittest.TestCase):
             editor.command("db-commit")
             editor.wait_for(lambda: editor.shows("ready") and not editor.shows("PENDING COMMIT"))
             self.assertEqual(editor.query("SELECT name FROM items WHERE id=3"), [("native-write",)])
+
+    def test_native_completion_back_and_unsaved_sql(self):
+        with NativeEditor(self) as editor:
+            editor.command("db-connect")
+            editor.wait_for(lambda: editor.shows("Database type"))
+            editor.send(b"\r")
+            editor.wait_for(lambda: editor.shows("SQLite form"))
+            editor.send(b"native\t../tasks\r")
+            editor.wait_for(lambda: editor.shows("Resolved paths"))
+            editor.send(b"\r")
+            editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
+            editor.send(b"ggj\r")
+            editor.wait_for(lambda: editor.shows("native-first"))
+            editor.send(b"ggjj\r")
+            editor.wait_for(lambda: editor.shows("name [TEXT]: native-first"))
+            editor.send(b"-")
+            editor.wait_for(lambda: editor.shows("page 1") and not editor.shows("name [TEXT]"))
+            editor.send(b"\t")
+            editor.wait_for(lambda: editor.shows("back"))
+            editor.send(b"back\r")
+            editor.wait_for(lambda: editor.shows("main.items"))
+            editor.command("db-query")
+            editor.wait_for(lambda: editor.shows("SELECT 1;"))
+            self.assertFalse(list(editor.project.glob("*.sql")))
+            editor.send(b"%cSELECT 42 AS unsaved_value;\x1b")
+            editor.wait_for(lambda: editor.shows("SELECT 42 AS unsaved_value"))
+            editor.command("db-run")
+            editor.wait_for(lambda: editor.shows("unsaved_value") and editor.shows("42") and editor.shows("rows retained"))
+            self.assertFalse(list(editor.project.glob("*.sql")))
+            editor.send(b"\x1bo")
+            editor.wait_for(lambda: editor.shows("SELECT 42 AS unsaved_value"))
+            editor.send(b":w\r")
+            editor.wait_for(lambda: bool(list(editor.project.glob("*.sql"))))
+            self.assertIn("SELECT 42 AS unsaved_value",next(editor.project.glob("*.sql")).read_text())
+            editor.command("db-return")
+            editor.wait_for(lambda: editor.shows("main.items"))
+
+    def test_selected_profile_disconnect_and_reconnect_actions(self):
+        with NativeEditor(self) as editor:
+            self.connect(editor)
+            editor.command("db")
+            editor.wait_for(lambda: editor.shows("Databases"))
+            editor.send(b"ggj\t")
+            editor.wait_for(lambda: editor.shows("Application actions"))
+            legacy = editor.shows("profile-actions")
+            if os.environ.get("DBVIEWER_EXPECT_ROW_ACTIONS") == "1":
+                self.assertFalse(legacy, editor.screen.text())
+            if legacy:
+                editor.send(b"profile-actions\r")
+                editor.wait_for(lambda: editor.shows("disconnect"))
+            self.assertTrue(re.search(r"\bdisconnect\b", editor.screen.text()))
+            editor.send(b"disconnect\r")
+            editor.wait_for(lambda: editor.shows("disconnected"))
+            editor.send(b"\t")
+            editor.wait_for(lambda: editor.shows("Application actions"))
+            if legacy:
+                editor.send(b"profile-actions\r")
+                editor.wait_for(lambda: not editor.shows("Application actions"))
+            self.assertFalse(re.search(r"\bdisconnect\b", editor.screen.text()), editor.screen.text())
+            # Pick the exact action: the existing fuzzy menu can also match
+            # connect-new, so typing its shared prefix is not a unique choice.
+            for _ in range(8):
+                if re.search(r"▸ connect\s", editor.screen.text()):
+                    break
+                editor.send(b"\x1b[B")
+            self.assertRegex(editor.screen.text(), r"▸ connect\s")
+            editor.send(b"\r")
+            editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
 
     def test_persistent_detach_and_reattach(self):
         with NativeEditor(self, persistent=True) as editor:

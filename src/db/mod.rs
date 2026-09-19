@@ -102,7 +102,10 @@ impl Database {
             .collect())
     }
     pub async fn browse(&self, t: &Table, page: usize, cancel: CancellationToken) -> Result<Data> {
-        let table = format!("{}.{}", query::ident(&t.schema), query::ident(&t.name));
+        self.browse_with(t, page, &crate::browse::Browse::default(), cancel)
+            .await
+    }
+    pub async fn browse_keys(&self, t: &Table, cancel: CancellationToken) -> Result<Vec<String>> {
         let keys_sql = match self {
             Self::Sqlite(_) => format!(
                 "SELECT name FROM pragma_table_info({}) WHERE pk>0 ORDER BY pk",
@@ -115,27 +118,31 @@ impl Database {
             ),
         };
         let keys = self.raw(keys_sql, false, cancel.clone(), 30).await?;
-        let keys = keys
+        Ok(keys
             .rows
             .iter()
-            .filter_map(|r| r.first()?.text.as_ref())
-            .map(|s| query::ident(s))
-            .collect::<Vec<_>>();
-        let order = if keys.is_empty() {
-            String::new()
-        } else {
-            format!(" ORDER BY {}", keys.join(","))
-        };
-        self.raw(
-            format!(
-                "SELECT * FROM {table}{order} LIMIT 100 OFFSET {}",
-                page.saturating_mul(100)
-            ),
-            false,
-            cancel,
-            30,
-        )
-        .await
+            .filter_map(|r| r.first()?.text.clone())
+            .collect())
+    }
+    pub async fn browse_with(
+        &self,
+        t: &Table,
+        page: usize,
+        browse: &crate::browse::Browse,
+        cancel: CancellationToken,
+    ) -> Result<Data> {
+        let keys = self.browse_keys(t, cancel.clone()).await?;
+        // Retain all fields for record inspection; selected ordinals affect display and export.
+        let mut full = browse.clone();
+        full.selected.clear();
+        let (sql, parameters) =
+            full.compile(t, page, &keys, matches!(self, Self::Postgres(_)), false)?;
+        let mut data = match self {
+            Self::Sqlite(db) => db.execute_bound(sql, parameters, false, cancel, 30).await,
+            Self::Postgres(db) => db.execute_bound(sql, parameters, false, cancel, 30).await,
+        }?;
+        data.order_keys = keys;
+        Ok(data)
     }
     pub async fn schema(&self, t: &Table, cancel: CancellationToken) -> Result<Data> {
         let sql = match self {

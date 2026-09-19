@@ -8,6 +8,22 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum Content {
     Connections,
+    Filters {
+        name: String,
+        source: String,
+        draft: crate::browse::Browse,
+    },
+    Transactions {
+        entries: Vec<(String, u64)>,
+    },
+    Value {
+        name: String,
+        data: Arc<Data>,
+        row: usize,
+        column: usize,
+        raw: bool,
+        collapsed: std::collections::BTreeSet<String>,
+    },
     Review {
         generation: u64,
         name: String,
@@ -34,9 +50,13 @@ pub struct View {
     pub published: tokio::time::Instant,
     pub revision: String,
     pub content: Content,
+    pub model: Value,
+    pub parent: Option<String>,
+    pub generation: Option<u64>,
+    pub browse: crate::browse::Browse,
 }
 pub fn text_model(title: &str, status: &str, rows: Vec<Value>, actions: &[&str]) -> Value {
-    json!({"title":short(&escape(title),150),"purpose":"list","rows":rows,"status":{"text":short(&escape(status),1000),"role":"muted"},"actions":actions.iter().map(|&a|if matches!(a,"connect"|"query"|"disconnect"|"commit"|"rollback"){format!("view-{a}")}else{a.to_owned()}).collect::<Vec<_>>()})
+    json!({"title":short(&escape(title),150),"purpose":"list","rows":rows,"status":{"text":short(&escape(status),1000),"role":"muted"},"actions":actions})
 }
 pub fn row(id: impl ToString, text: impl AsRef<str>) -> Value {
     json!({"id":id.to_string(),"text":short(&escape(text.as_ref()),2000),"role":"ordinary"})
@@ -75,15 +95,29 @@ pub fn short(s: &str, max: usize) -> String {
 impl Content {
     pub fn name(&self) -> Option<&str> {
         match self {
-            Self::Connections => None,
-            Self::Review { name, .. } | Self::Catalog { name, .. } | Self::Result { name, .. } => {
-                Some(name)
-            }
+            Self::Connections | Self::Transactions { .. } => None,
+            Self::Filters { name, .. }
+            | Self::Value { name, .. }
+            | Self::Review { name, .. }
+            | Self::Catalog { name, .. }
+            | Self::Result { name, .. } => Some(name),
         }
     }
     pub fn model(&self, state: &str) -> Value {
         match self {
-            Self::Connections => text_model("Databases", state, vec![], &["activate", "connect"]),
+            Self::Filters { .. } => text_model("Filters", state, vec![], &["back"]),
+            Self::Transactions { .. } => text_model("Transactions", state, vec![], &["back"]),
+            Self::Value {
+                name,
+                data,
+                row,
+                column,
+                raw,
+                collapsed,
+            } => crate::inspection::model(name, &data.rows[*row][*column], *raw, collapsed, state),
+            Self::Connections => {
+                text_model("Databases", state, vec![], &["activate", "connect-new"])
+            }
             Self::Review {
                 name, sql, source, ..
             } => {
@@ -109,6 +143,8 @@ impl Content {
                     .collect(),
                 &[
                     "activate",
+                    "back",
+                    "transactions",
                     "schema",
                     "refresh",
                     "system",
@@ -133,13 +169,24 @@ impl Content {
                 let status = format!(
                     "{state} · {source} · {} rows retained · {} affected{}",
                     data.rows.len(),
-                    data.affected,
+                    data.affected.map_or("unknown".into(), |n| n.to_string()),
                     if data.truncated {
                         " · TRUNCATED"
                     } else if data.cells_truncated {
-                        " · VALUES CLIPPED"
+                        " · RETAINED VALUES TRUNCATED"
                     } else {
                         ""
+                    }
+                );
+                let count = data.rows.len().saturating_sub(*offset).min(100);
+                let first = if count == 0 { 0 } else { page * 100 + 1 };
+                let last = if count == 0 { 0 } else { page * 100 + count };
+                let status = format!(
+                    "{status} · rows {first}–{last} · page size 100 · {}",
+                    if table.is_some() {
+                        "database page"
+                    } else {
+                        "retained SQL results; no SQL replay"
                     }
                 );
                 if let Some(index) = record {
@@ -171,7 +218,15 @@ impl Content {
                         &format!("{name} · row {}", index + 1),
                         &format!("{status} · Field previews; Enter opens the retained value"),
                         rows,
-                        &["activate", "back", "commit", "rollback"],
+                        &[
+                            "activate",
+                            "back",
+                            "query",
+                            "disconnect",
+                            "commit",
+                            "rollback",
+                            "transactions",
+                        ],
                     );
                 }
                 let columns = if columns.is_empty() {
@@ -188,8 +243,17 @@ impl Content {
                     &status,
                     vec![],
                     &[
-                        "activate", "next", "previous", "columns", "refresh", "back", "query",
-                        "commit", "rollback",
+                        "activate",
+                        "next",
+                        "previous",
+                        "columns",
+                        "refresh",
+                        "back",
+                        "query",
+                        "commit",
+                        "rollback",
+                        "disconnect",
+                        "transactions",
                     ],
                 );
                 if table.is_some() {
@@ -197,6 +261,10 @@ impl Content {
                         .as_array_mut()
                         .unwrap()
                         .push(json!("schema"));
+                    model["actions"]
+                        .as_array_mut()
+                        .unwrap()
+                        .extend(["filters", "sort", "page-size", "browse-sql"].map(|a| json!(a)));
                 }
                 if !columns.is_empty() {
                     model["columns"]=json!(columns.iter().map(|&i|json!({"id":format!("c{i}"),"label":column_label(&data.columns[i].name)})).collect::<Vec<_>>());

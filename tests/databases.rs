@@ -531,3 +531,159 @@ async fn sqlite_clipped_cells_preserve_writable_transaction() {
         .unwrap();
     assert_eq!(data.rows[0][0].text.as_deref(), Some("3"));
 }
+
+#[tokio::test]
+async fn sqlite_recursive_result_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recursive.db");
+    rusqlite::Connection::open(&path).unwrap();
+    let db = Database::open(
+        &Profile::Sqlite {
+            name: "recursive".into(),
+            path: path.to_str().unwrap().into(),
+        },
+        false,
+        String::new(),
+    )
+    .await
+    .unwrap();
+    let data=db.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1100) SELECT x FROM n".into(),false,token(),1).await.unwrap();
+    assert_eq!(data.rows.len(), 1000);
+    assert!(data.truncated);
+}
+
+async fn browse_filter_contract(db: &Database, schema: &str) {
+    use ru_dbviewer::browse::{Browse, Filter, Operator};
+    db.execute(
+        "CREATE TABLE browse_contract(id INTEGER PRIMARY KEY, \"odd name\" TEXT, amount NUMERIC)"
+            .into(),
+        true,
+        token(),
+        5,
+    )
+    .await
+    .unwrap();
+    db.settle(true).await.unwrap();
+    db.execute("INSERT INTO browse_contract VALUES(1,'literal%\\value',1.25),(2,'plain',2),(10,'',10),(20,NULL,NULL)".into(),true,token(),5).await.unwrap();
+    db.settle(true).await.unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: schema.into(),
+        name: "browse_contract".into(),
+        kind: "table".into(),
+    };
+    let original = db.browse(&table, 0, token()).await.unwrap();
+    let mut browse = Browse {
+        columns: original.columns,
+        sort: Some((0, false)),
+        ..Browse::default()
+    };
+    browse.filters.push(Filter {
+        column: 2,
+        op: Operator::Greater,
+        value: "1.5".into(),
+        enabled: true,
+    });
+    let filtered = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+    assert_eq!(
+        filtered
+            .rows
+            .iter()
+            .map(|r| r[0].text.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["2", "10"]
+    );
+    let keys = db.browse_keys(&table, token()).await.unwrap();
+    let (sql, _) = browse
+        .compile(&table, 0, &keys, schema == "public", true)
+        .unwrap();
+    let generated = db.execute(sql, false, token(), 5).await.unwrap();
+    assert_eq!(generated.rows.len(), filtered.rows.len());
+    for (a, b) in generated.rows.iter().zip(filtered.rows.iter()) {
+        assert_eq!(a[0].text, b[0].text);
+    }
+    browse.filters[0] = Filter {
+        column: 1,
+        op: Operator::Contains,
+        value: "%\\".into(),
+        enabled: true,
+    };
+    assert_eq!(
+        db.browse_with(&table, 0, &browse, token())
+            .await
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    browse.filters[0] = Filter {
+        column: 1,
+        op: Operator::Null,
+        value: String::new(),
+        enabled: true,
+    };
+    assert_eq!(
+        db.browse_with(&table, 0, &browse, token())
+            .await
+            .unwrap()
+            .rows[0][0]
+            .text
+            .as_deref(),
+        Some("20")
+    );
+    browse.filters[0].enabled = false;
+    browse.page_size = 2;
+    assert_eq!(
+        db.browse_with(&table, 1, &browse, token())
+            .await
+            .unwrap()
+            .rows[0][0]
+            .text
+            .as_deref(),
+        Some("10")
+    );
+    db.execute("DROP TABLE browse_contract".into(), true, token(), 5)
+        .await
+        .unwrap();
+    db.settle(true).await.unwrap();
+}
+#[tokio::test]
+async fn sqlite_interactive_browse_parameters_and_generated_sql() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("browse.db");
+    rusqlite::Connection::open(&path).unwrap();
+    let db = Database::open(
+        &Profile::Sqlite {
+            name: "browse".into(),
+            path: path.to_str().unwrap().into(),
+        },
+        true,
+        String::new(),
+    )
+    .await
+    .unwrap();
+    browse_filter_contract(&db, "main").await;
+}
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_interactive_browse_parameters_and_generated_sql() {
+    let port = std::env::var("DBVIEWER_TEST_PG_PORT")
+        .expect("isolated PostgreSQL port")
+        .parse()
+        .unwrap();
+    let p = Profile::Postgres {
+        name: "browse".into(),
+        host: "127.0.0.1".into(),
+        port,
+        database: "dbviewer".into(),
+        user: "dbviewer".into(),
+        plaintext: true,
+        password_env: String::new(),
+        ca: String::new(),
+        certificate: String::new(),
+        key: String::new(),
+    };
+    let db = Database::open(&p, true, "dbviewer-test-only".into())
+        .await
+        .unwrap();
+    browse_filter_contract(&db, "public").await;
+}

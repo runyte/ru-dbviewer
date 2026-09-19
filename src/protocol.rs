@@ -18,6 +18,18 @@ use std::{
 };
 use tokio::sync::{Semaphore, mpsc as async_mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+// Stdout's LineWriter can accept a tail into its own buffer after a partial
+// nonblocking write. The transport owns framing and must never retain that tail
+// while waiting for the next frame (the host is waiting for this frame's newline).
+fn write_fd(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
+    // The descriptor is owned by the plugin; the immutable slice remains valid.
+    let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+    if n < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(n as usize)
+    }
+}
 pub const FRAME: usize = 1024 * 1024;
 type Reply = oneshot::Sender<Result<Value>>;
 struct Inner {
@@ -74,7 +86,7 @@ impl Rpc {
                         writer.stop();
                         return;
                     }
-                    match std::io::stdout().write(&bytes[at..]) {
+                    match write_fd(1, &bytes[at..]) {
                         Ok(0) => {
                             writer.stop();
                             return;

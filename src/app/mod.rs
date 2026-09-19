@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+mod browsing;
 mod commands;
 mod input;
 mod lifecycle;
@@ -21,18 +22,35 @@ pub fn commands() -> Value {
     for (name, alias, context, description) in [
         ("open", "db", "workspace", "Open database connections"),
         (
-            "connect",
+            "return",
+            "db-return",
+            "buffer",
+            "Return to the source browsing view",
+        ),
+        (
+            "global-transactions",
+            "db-transactions",
+            "workspace",
+            "Inspect pending transactions",
+        ),
+        (
+            "global-connect",
             "db-connect",
             "workspace",
             "Connect to a database",
         ),
         (
-            "disconnect",
+            "global-disconnect",
             "db-disconnect",
             "workspace",
             "Disconnect the selected database",
         ),
-        ("query", "db-query", "workspace", "Create an SQL document"),
+        (
+            "global-query",
+            "db-query",
+            "workspace",
+            "Create an SQL document",
+        ),
         (
             "use",
             "db-use",
@@ -58,13 +76,13 @@ pub fn commands() -> Value {
             "Cancel the selected database operation",
         ),
         (
-            "commit",
+            "global-commit",
             "db-commit",
             "workspace",
             "Commit the pending transaction",
         ),
         (
-            "rollback",
+            "global-rollback",
             "db-rollback",
             "workspace",
             "Roll back the pending transaction",
@@ -79,10 +97,27 @@ pub fn commands() -> Value {
         ("refresh", "Refresh database data"),
         ("system", "Toggle system schemas"),
         ("mode", "Change read-only/writable mode"),
+        (
+            "profile-actions",
+            "Actions for the selected database profile",
+        ),
         ("next", "Next page"),
         ("previous", "Previous page"),
-        ("columns", "Choose visible column ordinals"),
-        ("back", "Return to rows or catalog"),
+        ("columns", "Choose visible columns"),
+        ("filters", "Edit row filters"),
+        ("add-filter", "Add filter"),
+        ("edit-filter", "Edit selected filter"),
+        ("remove-filter", "Remove selected filter"),
+        ("toggle-filter", "Enable or disable selected filter"),
+        ("clear-filters", "Clear filters"),
+        ("match", "Choose Match ALL or ANY"),
+        ("apply-filters", "Apply filters and return to page one"),
+        ("sort", "Sort rows"),
+        ("page-size", "Set browse page size"),
+        ("browse-sql", "Open current browse as SQL"),
+        ("back", "Return to parent"),
+        ("transactions", "Inspect pending transactions"),
+        ("raw", "Toggle raw and formatted JSON"),
         (
             "acknowledge",
             "Acknowledge an uncertain previous operation after review",
@@ -91,15 +126,14 @@ pub fn commands() -> Value {
         commands.push(json!({"name":name,"context":"view","description":description,"primary":name=="activate"}));
     }
     for (name, description) in [
-        ("connect", "Connect database"),
+        ("connect", "Connect the selected saved profile"),
+        ("connect-new", "Connect to a new database"),
         ("query", "New SQL document"),
         ("disconnect", "Disconnect database"),
         ("commit", "Commit transaction"),
         ("rollback", "Roll back transaction"),
     ] {
-        commands.push(
-            json!({"name":format!("view-{name}"),"context":"view","description":description}),
-        );
+        commands.push(json!({"name":name,"context":"view","description":description}));
     }
     json!(commands)
 }
@@ -113,6 +147,9 @@ struct Connection {
     cancel: CancellationToken,
     lease: Option<String>,
     expiry: Option<tokio::time::Instant>,
+    started: Option<tokio::time::Instant>,
+    summary: String,
+    affected: Option<u64>,
 }
 #[derive(Clone)]
 struct Intent {
@@ -124,16 +161,71 @@ struct Intent {
 enum Input {
     Backend,
     Sqlite,
+    SqlitePath {
+        name: String,
+        choices: Vec<(String, String)>,
+    },
     Postgres,
     Password(Profile, bool),
     Use(String),
-    Mode(String, bool),
+    ProfileActions {
+        source: String,
+        name: String,
+        generation: Option<u64>,
+        choices: Vec<String>,
+    },
+    ModeChoice(String, u64),
+    Mode(String, u64, bool),
     Run(Intent),
-    Columns(String),
+    ColumnPick {
+        view: String,
+        selected: Vec<usize>,
+        search: String,
+        start: usize,
+        choices: Vec<(String, usize)>,
+    },
+    ColumnSearch {
+        view: String,
+        selected: Vec<usize>,
+    },
+    FieldChoice {
+        view: String,
+        index: Option<usize>,
+        sorting: bool,
+        search: String,
+        start: usize,
+        choices: Vec<(String, usize)>,
+    },
+    FieldSearch {
+        view: String,
+        index: Option<usize>,
+        sorting: bool,
+    },
+    FilterOp {
+        view: String,
+        index: Option<usize>,
+        column: usize,
+    },
+    FilterValue {
+        view: String,
+        index: Option<usize>,
+        column: usize,
+        op: crate::browse::Operator,
+    },
+    Match(String),
+    SortDirection(String, usize),
+    PageSize(String),
     Acknowledge(String),
-    Disconnect(String),
+    Disconnect(String, u64),
+}
+struct PathCompletion {
+    ctx: Value,
+    name: String,
+    result: Result<crate::paths::Destination>,
+    epoch: u64,
 }
 enum Work {
+    Path(PathCompletion),
     Connect(Profile, bool, Result<Database>),
     Catalog(String, Vec<Table>, bool),
     Data(String, Data, Option<Table>, usize, String),
@@ -152,13 +244,20 @@ pub struct App {
     connections: HashMap<String, Connection>,
     views: HashMap<String, View>,
     buffers: HashMap<String, (String, u64)>,
+    sources: HashMap<String, String>,
+    query_serial: u64,
     generation: u64,
     input: HashMap<String, Input>,
+    input_epoch: u64,
+    input_source: Option<String>,
+    path_pending: bool,
+    path_slots: Arc<tokio::sync::Semaphore>,
     connecting: HashMap<String, (String, CancellationToken)>,
     active: Option<String>,
     sender: mpsc::Sender<Completion>,
     receiver: mpsc::Receiver<Completion>,
     seconds: u64,
+    row_actions: bool,
 }
 fn string(v: &Value, key: &str) -> Result<String> {
     v[key]
@@ -179,7 +278,7 @@ impl App {
         if hello["type"] != "hello" || hello["version"] != "runyte-1" || !supported(version) {
             return Err("Runyte >=0.3.0, <0.4.0 is required".into());
         }
-        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands(),"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":[]}))?;
+        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands(),"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":["view-row-actions"]}))?;
         let registered = tokio::time::timeout(Duration::from_secs(8), input.recv())
             .await
             .map_err(|_| "Registration timed out")?
@@ -194,6 +293,20 @@ impl App {
         {
             return Err("Plugin registration refused".into());
         }
+        let supported = hello["features"]
+            .as_array()
+            .ok_or("Invalid host features")?;
+        let features = registered["features"]
+            .as_array()
+            .ok_or("Invalid negotiated features")?;
+        if features.len() > 1
+            || features
+                .iter()
+                .any(|f| f != "view-row-actions" || !supported.contains(f))
+        {
+            return Err("Invalid negotiated features".into());
+        }
+        let row_actions = features.iter().any(|f| f == "view-row-actions");
         let saved = rpc.request("state.get", json!({})).await?;
         let document = &saved["document"];
         let state: Saved = if document.is_null() {
@@ -219,13 +332,20 @@ impl App {
             connections: HashMap::new(),
             views: HashMap::new(),
             buffers: HashMap::new(),
+            sources: HashMap::new(),
+            query_serial: 0,
             generation: 0,
             input: HashMap::new(),
+            input_epoch: 0,
+            input_source: None,
+            path_pending: false,
+            path_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             connecting: HashMap::new(),
             active: None,
             sender: tx,
             receiver: rx,
             seconds,
+            row_actions,
         };
         loop {
             if rpc.closed() {
@@ -244,7 +364,12 @@ impl App {
               let Some(message)=message else{break;};
               if message["type"]=="event" {if message["event"]=="view.closed" {app.views.remove(message["data"]["view"].as_str().unwrap_or(""));}else if message["event"]=="activity.cancel_requested" {app.cancel_lease(message["data"]["lease"].as_str().unwrap_or("")).await?;}continue;}
               if message["type"]!="request"{continue;}
+              if message["method"]=="ui.validate" { app.validate_form(&message); continue; }
               let id=string(&message,"id")?;let mut ctx=message["params"].clone();ctx["invocation"]=json!(id);
+              if message["method"]=="ui.submit" {
+                app.restore_input_source(&mut ctx);
+                match app.defer_path(&ctx) {Ok(true)=>continue,Ok(false)=>{},Err(e)=>{rpc.reply(&id,Err(e))?;continue;}}
+              }
               let result=if message["method"]=="ui.submit"{app.submit(ctx).await}else if message["method"]=="command.invoke"{app.command(ctx).await}else{Err("Unsupported host method".into())};
               rpc.reply(&id,result)?;
              }
@@ -287,22 +412,190 @@ impl App {
             "disconnected".into()
         }
     }
+    fn profile_choices(&self, name: &str) -> Vec<String> {
+        let connection = self.connections.get(name);
+        if self.saved.uncertain.iter().any(|n| n == name)
+            && !connection.is_some_and(|c| c.pending || c.busy)
+        {
+            return vec!["Acknowledge uncertain outcome".into()];
+        }
+        let mut choices: Vec<String> = if connection.is_some() {
+            ["query", "mode", "disconnect", "transactions"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            vec!["connect".into()]
+        };
+        if connection.is_some_and(|c| c.pending) {
+            choices.extend(["commit".into(), "rollback".into()]);
+        }
+        choices
+    }
     fn model(&self, content: &Content) -> Value {
-        if matches!(content, Content::Connections) {
-            views::text_model(
+        let mut model = match content {
+            Content::Connections => views::text_model(
                 "Databases",
                 "Enter: connect/browse · Tab: actions",
                 self.saved
                     .profiles
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| views::row(i, format!("{} · {}", p.name(), self.state(p.name()))))
+                    .map(|(i, p)| {
+                        let mut row =
+                            views::row(i, format!("{} · {}", p.name(), self.state(p.name())));
+                        if self.row_actions {
+                            let choices = self.profile_choices(p.name());
+                            let mut actions = vec!["connect-new".to_owned(), "transactions".into()];
+                            if !choices.iter().any(|c| c == "Acknowledge uncertain outcome") {
+                                actions.push("activate".into());
+                            }
+                            for choice in choices {
+                                let action = if choice == "Acknowledge uncertain outcome" {
+                                    "acknowledge".into()
+                                } else {
+                                    choice
+                                };
+                                if !actions.contains(&action) {
+                                    actions.push(action);
+                                }
+                            }
+                            row["actions"] = json!(actions);
+                        }
+                        row
+                    })
                     .collect(),
-                &["activate", "connect", "acknowledge"],
-            )
-        } else {
-            content.model(&self.state(content.name().unwrap_or("")))
+                if self.row_actions {
+                    &["connect-new", "transactions"]
+                } else {
+                    &["activate", "connect-new", "profile-actions", "transactions"]
+                },
+            ),
+            Content::Filters { draft, .. } => views::text_model(
+                "Row filters",
+                &draft.summary(),
+                draft
+                    .filters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        views::row(
+                            i,
+                            format!(
+                                "[{}] {} {} {}",
+                                if f.enabled { "x" } else { " " },
+                                draft.columns.get(f.column).map_or("?", |c| c.name.as_str()),
+                                f.op.name(),
+                                f.value
+                            ),
+                        )
+                    })
+                    .collect(),
+                &[
+                    "add-filter",
+                    "edit-filter",
+                    "remove-filter",
+                    "toggle-filter",
+                    "clear-filters",
+                    "match",
+                    "apply-filters",
+                    "back",
+                ],
+            ),
+            Content::Transactions { entries } => views::text_model(
+                "Transactions",
+                "Select a transaction · Tab commit / rollback / disconnect · age at refresh",
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, generation))| {
+                        let detail = self
+                            .connections
+                            .get(name)
+                            .filter(|c| c.generation == *generation && c.pending)
+                            .map(|c| {
+                                format!(
+                                    "{} · age {}s · {} affected · {}",
+                                    self.state(name),
+                                    c.started.map_or(0, |t| t.elapsed().as_secs()),
+                                    c.affected.map_or("unknown".into(), |n| n.to_string()),
+                                    c.summary
+                                )
+                            })
+                            .unwrap_or_else(|| "settled or disconnected".into());
+                        views::row(i, format!("{name} · {detail}"))
+                    })
+                    .collect(),
+                &["commit", "rollback", "disconnect", "refresh", "back"],
+            ),
+            _ => content.model(&self.state(content.name().unwrap_or(""))),
+        };
+        if let Content::Catalog { name, .. } = content
+            && let Some(Profile::Sqlite { path, .. }) =
+                self.saved.profiles.iter().find(|p| p.name() == name)
+        {
+            model["detail"] = json!({"text":views::short(&format!("Resolved database: {}",crate::results::escape(path)),2000),"role":"muted"});
         }
+        let name = content.name();
+        let live = name.and_then(|n| self.connections.get(n));
+        if let Some(actions) = model["actions"].as_array_mut() {
+            actions.retain(|a| match a.as_str().unwrap_or("") {
+                "disconnect"|"query"|"mode" if matches!(content,Content::Connections)=>!self.connections.is_empty(),
+                "disconnect"|"commit"|"rollback" if matches!(content,Content::Transactions{entries} if entries.is_empty())=>false,
+                "acknowledge" => name.map_or_else(
+                    || {
+                        self.saved
+                            .uncertain
+                            .iter()
+                            .any(|n| !self.connections.get(n).is_some_and(|c| c.pending || c.busy))
+                    },
+                    |n| {
+                        self.saved.uncertain.iter().any(|x| x == n)
+                            && !live.is_some_and(|c| c.pending || c.busy)
+                    },
+                ),
+                "disconnect" | "mode" | "query" if name.is_some() => live.is_some(),
+                "commit" | "rollback" if name.is_some() => live.is_some_and(|c| c.pending),
+                _ => true,
+            });
+        }
+        model
+    }
+    fn model_for_view(&self, id: &str, content: &Content) -> Value {
+        let mut model = self.model(content);
+        if let Content::Result {
+            data,
+            table: Some(_),
+            page,
+            record: None,
+            ..
+        } = content
+        {
+            let browse = &self.views[id].browse;
+            let n = model["rows"].as_array().map_or(0, Vec::len);
+            let size = browse.size();
+            let range = if n == 0 {
+                "0–0".into()
+            } else {
+                format!("{}–{}", page * size + 1, page * size + n)
+            };
+            model["detail"] = json!({"text":views::short(&crate::results::escape(&browse.summary()),2000),"role":"muted"});
+            model["status"] = json!({"text":views::short(&format!("{} · rows {range} · page size {size} · database page; external writes can shift offset pages{}",self.state(content.name().unwrap_or("")),if data.cells_truncated{" · RETAINED VALUES TRUNCATED"}else{" · cell previews may be clipped"}),1000),"role":"muted"});
+        }
+        if let Some(name) = content.name()
+            && let Some(generation) = self.views[id].generation
+            && self
+                .connections
+                .get(name)
+                .is_some_and(|c| c.generation != generation)
+        {
+            model["status"] = json!({"text":"Connection changed · retained data; return to Databases and reopen this connection","role":"warning"});
+            model["actions"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|a| matches!(a.as_str(), Some("back" | "activate" | "raw")));
+        }
+        model
     }
     async fn create(&mut self, ctx: &Value, content: Content) -> Result<String> {
         if self.views.len() >= 12 {
@@ -313,12 +606,35 @@ impl App {
             .request("view.create", json!({"model":self.model(&content)}))
             .await?;
         let id = string(&result, "view")?;
+        let connected_content = content.name().is_some();
         self.views.insert(
             id.clone(),
             View {
                 published: tokio::time::Instant::now(),
                 revision: string(&result, "revision")?,
+                model: self.model(&content),
                 content,
+                parent: ctx["view"].as_str().map(str::to_owned),
+                browse: crate::browse::Browse::default(),
+                generation: connected_content
+                    .then(|| {
+                        ctx["view"]
+                            .as_str()
+                            .and_then(|id| self.views.get(id))
+                            .and_then(|v| v.generation)
+                            .or_else(|| {
+                                ctx["buffer"]
+                                    .as_str()
+                                    .and_then(|id| self.buffers.get(id))
+                                    .map(|(_, g)| *g)
+                            })
+                            .or_else(|| {
+                                self.target(ctx)
+                                    .ok()
+                                    .and_then(|n| self.connections.get(&n).map(|c| c.generation))
+                            })
+                    })
+                    .flatten(),
             },
         );
         self.rpc
@@ -333,12 +649,19 @@ impl App {
         let Some(view) = self.views.get(id) else {
             return Ok(());
         };
+        let model = self.model_for_view(id, &content);
+        if model == view.model {
+            if let Some(v) = self.views.get_mut(id) {
+                v.content = content;
+            }
+            return Ok(());
+        }
         tokio::time::sleep_until(view.published + Duration::from_millis(110)).await;
         let result = self
             .rpc
             .request(
                 "view.publish",
-                json!({"view":id,"expected_revision":view.revision,"model":self.model(&content)}),
+                json!({"view":id,"expected_revision":view.revision,"model":model}),
             )
             .await;
         match result {
@@ -347,6 +670,7 @@ impl App {
                     view.revision = string(&v, "revision")?;
                     view.published = tokio::time::Instant::now();
                     view.content = content;
+                    view.model = model;
                 }
                 Ok(())
             }
@@ -374,14 +698,76 @@ impl App {
     }
     fn target(&self, ctx: &Value) -> Result<String> {
         if let Some(name) = ctx["buffer"].as_str().and_then(|b| self.buffers.get(b)) {
+            self.check_generation(&name.0, name.1)?;
             return Ok(name.0.clone());
         }
-        if let Some(v) = ctx["view"].as_str().and_then(|id| self.views.get(id))
-            && let Some(name) = v.content.name()
-        {
-            return Ok(name.to_owned());
+        if ctx["view"].is_string() {
+            let (_, content) = self.context_view(ctx)?;
+            match content {
+                Content::Connections => {
+                    return self
+                        .saved
+                        .profiles
+                        .get(Self::selected(ctx)?)
+                        .map(|p| p.name().to_owned())
+                        .ok_or("Select a database profile".into());
+                }
+                Content::Transactions { entries } => {
+                    let (name, generation) = entries
+                        .get(Self::selected(ctx)?)
+                        .ok_or("Select a pending transaction")?;
+                    self.check_generation(name, *generation)?;
+                    return Ok(name.clone());
+                }
+                _ => {
+                    if let Some(name) = content.name() {
+                        if let Some(generation) = ctx["view"]
+                            .as_str()
+                            .and_then(|id| self.views.get(id))
+                            .and_then(|v| v.generation)
+                        {
+                            self.check_generation(name, generation)?;
+                        }
+                        return Ok(name.to_owned());
+                    }
+                }
+            }
         }
         self.active.clone().ok_or("Choose a database first".into())
+    }
+    fn check_generation(&self, name: &str, generation: u64) -> Result<()> {
+        if self
+            .connections
+            .get(name)
+            .is_some_and(|c| c.generation == generation)
+        {
+            Ok(())
+        } else {
+            Err("Connection changed or disconnected; invoke the action again".into())
+        }
+    }
+    async fn back(&mut self, ctx: &Value, parent: Option<String>) -> Result<()> {
+        if let Some(id) = parent.filter(|id| self.views.contains_key(id)) {
+            self.rpc
+                .request(
+                    "pane.show",
+                    json!({"invocation":ctx["invocation"],"view":id}),
+                )
+                .await?;
+        } else {
+            self.create(ctx, Content::Connections).await?;
+        }
+        Ok(())
+    }
+    fn transaction_entries(&self) -> Vec<(String, u64)> {
+        let mut entries = self
+            .connections
+            .iter()
+            .filter(|(_, c)| c.pending)
+            .map(|(n, c)| (n.clone(), c.generation))
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
     }
     fn selected(ctx: &Value) -> Result<usize> {
         let rows = ctx["rows"].as_array().ok_or("Select one row")?;

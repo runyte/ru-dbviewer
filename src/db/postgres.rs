@@ -145,6 +145,17 @@ impl Postgres {
         cancel: CancellationToken,
         seconds: u64,
     ) -> Result<Data> {
+        self.execute_bound(sql, Vec::new(), write, cancel, seconds)
+            .await
+    }
+    pub async fn execute_bound(
+        &self,
+        sql: String,
+        parameters: Vec<String>,
+        write: bool,
+        cancel: CancellationToken,
+        seconds: u64,
+    ) -> Result<Data> {
         let work = async {
             self.client
                 .batch_execute(if write { "BEGIN" } else { "BEGIN READ ONLY" })
@@ -171,6 +182,33 @@ impl Postgres {
                     .collect(),
                 ..Data::default()
             };
+            if !parameters.is_empty() {
+                // Browse projections cast returned columns to text; values remain bound parameters.
+                let params = parameters
+                    .iter()
+                    .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+                    .collect::<Vec<_>>();
+                let stream = self
+                    .client
+                    .query_raw(&statement, params)
+                    .await
+                    .map_err(error)?;
+                pin_mut!(stream);
+                while let Some(row) = stream.next().await {
+                    let row = row.map_err(error)?;
+                    let cells = (0..row.len())
+                        .map(|i| {
+                            row.try_get::<_, Option<String>>(i)
+                                .map(Cell::new)
+                                .map_err(error)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    if !data.push(cells) {
+                        return Ok(data);
+                    }
+                }
+                return Ok(data);
+            }
             let stream = self.client.simple_query_raw(&sql).await.map_err(error)?;
             pin_mut!(stream);
             while let Some(item) = stream.next().await {
@@ -183,7 +221,7 @@ impl Postgres {
                             return Ok(data);
                         }
                     }
-                    SimpleQueryMessage::CommandComplete(n) => data.affected = n,
+                    SimpleQueryMessage::CommandComplete(n) => data.affected = Some(n),
                     _ => {}
                 }
             }

@@ -80,16 +80,50 @@ impl App {
         }
     }
     pub(super) async fn query_document(&mut self, ctx: &Value, name: String) -> Result<()> {
+        self.query_document_text(ctx, name, "SELECT 1;\n").await
+    }
+    pub(super) async fn query_document_text(
+        &mut self,
+        ctx: &Value,
+        name: String,
+        sql: &str,
+    ) -> Result<()> {
         self.ready(&name)?;
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "Clock unavailable")?
-            .as_nanos();
-        let result=self.rpc.request("buffer.create",json!({"invocation":ctx["invocation"],"path":format!("db-query-{stamp}.sql"),"text":"SELECT 1;\n"})).await?;
+        if self.buffers.len() >= 256 {
+            return Err(
+                "SQL association limit reached; restart the plugin after saving documents".into(),
+            );
+        }
         let generation = self.connections[&name].generation;
-        self.buffers
-            .insert(string(&result, "buffer")?, (name, generation));
-        Ok(())
+        let writable = self.connections[&name].writable;
+        let text = crate::documents::initial(&name, writable, sql);
+        for _ in 0..32 {
+            self.query_serial = self
+                .query_serial
+                .checked_add(1)
+                .ok_or("Query filename counter exhausted")?;
+            let path = crate::documents::filename(&name, self.query_serial)?;
+            match self
+                .rpc
+                .request(
+                    "buffer.create",
+                    json!({"invocation":ctx["invocation"],"path":path,"text":text}),
+                )
+                .await
+            {
+                Ok(result) => {
+                    let buffer = string(&result, "buffer")?;
+                    if let Some(view) = ctx["view"].as_str() {
+                        self.sources.insert(buffer.clone(), view.into());
+                    }
+                    self.buffers.insert(buffer, (name, generation));
+                    return Ok(());
+                }
+                Err(e) if e.ends_with("conflict") || e.ends_with("already_exists") => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err("Could not allocate a unique query filename".into())
     }
     pub(super) async fn capture(&mut self, ctx: &Value, selection: bool) -> Result<Intent> {
         let buffer = string(ctx, "buffer")?;
@@ -231,6 +265,11 @@ impl App {
             }
         };
         let c = self.connections.get_mut(&intent.name).unwrap();
+        if write {
+            c.started = Some(tokio::time::Instant::now());
+            c.summary = views::short(&crate::results::escape(&intent.sql), 240);
+            c.affected = None;
+        }
         c.busy = true;
         c.cancel = cancel.clone();
         c.job = Some(job.clone());
@@ -283,7 +322,25 @@ impl App {
         system: bool,
     ) -> Result<Option<String>> {
         let db = self.ready(&name)?;
-        let view = if let Some(id) = ctx["view"].as_str() {
+        if let Some(generation) = ctx["view"]
+            .as_str()
+            .and_then(|id| self.views.get(id))
+            .and_then(|v| v.generation)
+        {
+            self.check_generation(&name, generation)?;
+        }
+        let descending = ctx["command"] == "activate" || ctx["command"] == "schema";
+        let view = if descending {
+            self.create(
+                ctx,
+                Content::Catalog {
+                    name: name.clone(),
+                    tables: vec![],
+                    system,
+                },
+            )
+            .await?
+        } else if let Some(id) = ctx["view"].as_str() {
             self.context_view(ctx)?;
             id.to_owned()
         } else {
@@ -297,6 +354,11 @@ impl App {
             )
             .await?
         };
+        let browse = self
+            .views
+            .get(&view)
+            .map(|v| v.browse.clone())
+            .unwrap_or_default();
         let (job, cancel) = self.job("Read database").await?;
         let c = self.connections.get_mut(&name).unwrap();
         c.busy = true;
@@ -309,7 +371,7 @@ impl App {
                 let result = if schema {
                     db.schema(&table, cancel).await
                 } else {
-                    db.browse(&table, page, cancel).await
+                    db.browse_with(&table, page, &browse, cancel).await
                 };
                 result.map(|d| {
                     Work::Data(

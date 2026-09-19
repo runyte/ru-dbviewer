@@ -23,3 +23,9 @@ The `objc2-core-foundation` and `objc2-system-configuration` 0.3.2 registry
 packages omit their root notice; their Cargo VCS metadata identifies that revision.
 The release collector supplies this notice and the Apache-2.0 option's full text
 from `third_party/Apache-2.0.txt` (standard text copied from serde 1.0.229).
+
+`tests/fixtures/view-row-actions.json` is the additive `row.actions` property
+from the coordinated `view-row-actions` host change (MPL-2.0). Feature-enabled
+wire tests layer it onto the retained base schema; fallback tests continue to
+validate against that unchanged base schema. It does not replace or claim a
+new upstream revision for the frozen fixtures above.

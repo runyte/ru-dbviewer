@@ -20,3 +20,8 @@ pub const CAPABILITIES: &[&str] = &[
     "state",
     "activity",
 ];
+
+pub mod browse;
+pub mod documents;
+pub mod inspection;
+pub mod paths;
