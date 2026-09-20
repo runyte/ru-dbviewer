@@ -1,5 +1,90 @@
 # Validation register
 
+## Actions, metadata and full-value documents — 2026-09-19
+
+Linux x86-64 native acceptance passed all eight cases in `tests/native.py`, with
+`DBVIEWER_EXPECT_ROW_ACTIONS=1` and `DBVIEWER_EXPECT_FULL_VALUES=1`. Both binaries
+were current local debug builds, not release artifacts or the historical CI pin.
+The plugin executable used for timing was copied before coverage instrumentation.
+macOS and ARM64 were not exercised by these runs.
+
+The native cases exercise contextual titles and metadata, selection-based row
+activation, grouped labels without Activate, read-only browsing, writable SQL
+review/commit, path completion, unsaved SQL, profile connect/disconnect, indented
+previews, both Back controls, and persistent-session attachment. The large-value
+case loads 4,944,933 raw bytes into 5,256,945 formatted bytes over 48,005 lines.
+Native search reaches its trailing sentinel; ordinary `%y` and `p` copy every
+chunk to a fixture-owned file. Parsed formatted content equals the original and
+raw copying preserves the original text exactly. Detach/reattach preserves the
+loaded value. Back restores the record field: Enter immediately reopens its preview.
+
+Native acceptance exposed a full-value parent that still pointed at the source
+preview. After correcting it to the record, all eight cases passed in 44.569s.
+The cancellation case deliberately accepts an already committed successful result;
+it proves responsive input and safe cancellation/commit races, not that cancellation
+won. Deterministic public-wire cancellation cases provide that separate evidence.
+
+A subsequent uninstrumented debug run of the large-value case passed in 14.152s.
+Observed harness elapsed time was 0.801s to complete the load and 0.100s to open a
+command prompt while loading was still active. These include the harness's 0.3s
+send drain and 0.1s wait polling, and are not intrinsic latency measurements.
+Fixture-host RSS/high-water observations were 50,052 KiB before loading, 72,392 KiB
+after loading, and 144,888 KiB after copying formatted and raw values to separate
+editable buffers. They exclude the plugin and frontend processes and are not hard
+RSS bounds. After returning to the full document, moving to its start and allowing
+two seconds to settle, the host consumed 0ms CPU in a one-second sample. An earlier
+sample taken immediately after an editable copy was discarded as unsettled work.
+Unavailable `/proc` measurements are reported as unavailable, never as measured zero.
+
+Both database adapters preserve original captured sources. All five PostgreSQL
+fixture suites passed separately against disposable PostgreSQL 17.9, including
+TLS, client certificates, Unix sockets, cancellation and lost-commit acknowledgement.
+Capture regressions cover anonymous-file ownership, immutable ranges, original
+SQLite/PostgreSQL values, complete hexadecimal representations, quota exhaustion,
+write failures, cancelled/expired reads and writable rollback behavior. Storage
+reservations are released only after the underlying descriptor closes.
+
+The final fresh-profile run passed formatting, locked all-target Clippy with
+warnings denied, 41 ordinary Rust tests, 17 public-wire tests, 38 interactive tests,
+nine full-value tests, all five PostgreSQL fixture suites and eight native PTY
+cases. Combined line coverage is 89.90% (5,652 of 6,287 lines), above the unchanged
+75% floor. Older profiles were removed before this measurement. The final native
+suite passed in 47.458s with the plugin instrumented; the timing and memory
+observations above deliberately use the separate uninstrumented run.
+
+An earlier instrumented cancellation run exposed an intermittent plugin shutdown.
+Inspection found a transport race: concurrent request callers could allocate
+increasing IDs and then queue their frames in reverse order, which the host
+rejects. `Rpc::request` now serializes allocation through queue insertion without
+holding that lock during socket IO or while awaiting replies.
+`protocol::tests::concurrent_large_frames_and_control_requests_keep_wire_ids_in_order`
+covers 128 concurrent mixed-size requests. The race is source-confirmed, but was
+not established as the cause of that particular shutdown. All suites above passed
+after the fix. `cargo +1.88 check --locked --all-targets` also passed; the normal
+uninstrumented debug executable was rebuilt afterward and locked Rust tests
+passed again. Independent review rounds for capture, presentation, full documents,
+transport ordering and tests/documentation finished without remaining findings;
+earlier coverage sections remain historical evidence.
+
+## Truncated JSON prefix display — 2026-09-19
+
+On Linux x86-64, formatting, locked all-target Clippy with warnings denied,
+25 Rust tests, 17 public-wire tests, 23 interactive tests and six native Runyte
+PTY tests passed. Five PostgreSQL fixture tests remain ignored in this run;
+macOS and ARM64 were not exercised. Fresh profiles from these suites measure
+84.02% line coverage (4,026 of 4,792 lines), above the unchanged 75% floor.
+Older profiles were excluded from this measurement.
+
+`inspection::tests::incomplete_json_indents_without_repairing_strings_or_numbers`
+and `incomplete_json_keeps_long_strings_and_bounds_expansion` in
+`src/inspection.rs` cover unfinished strings, escapes, Unicode, duplicate keys,
+number spelling, raw text preservation and bounded fallback.
+`test_truncated_json_prefix_and_raw_keep_retained_data` in `tests/interactive.py`
+checks real SQLite values above 64 KiB, both feature negotiations, raw round trips
+and navigation without SQL replay. `test_truncated_json_value_and_back` in
+`tests/native.py` checks visible indentation, raw inspection and the configured
+`-` binding through Value → Record → Rows in a real editor.
+
 ## Initial implementation — 2026-09-17
 
 Evidence applies to the implementation delivered with this record. No public
@@ -48,11 +133,14 @@ Build the pinned Runyte host separately, before exporting coverage variables.
 Use a disposable database fixture; never point these tests at personal data.
 
 ```sh
+cargo llvm-cov clean --profraw-only
 source <(cargo llvm-cov show-env --sh)
 cargo clean -p ru-dbviewer
 cargo test --locked
+cargo build --locked
 python3 tests/wire.py
 python3 tests/interactive.py
+python3 tests/full_values.py
 PG_BIN=/path/to/postgresql/bin python3 scripts/postgres_tests.py
 RUNYTE_BIN=/path/to/runyte python3 tests/native.py
 cargo llvm-cov report --summary-only --fail-under-lines 75
@@ -62,6 +150,9 @@ Cleaning only this package before the instrumented build matters: changing
 wrapper-specific environment variables alone can reuse an uninstrumented
 library. Include the external plugin processes in the same LLVM_PROFILE_FILE
 environment. Unit-only coverage is not the combined behavior measurement.
+When validating a current host that advertises the new features, also set
+`DBVIEWER_EXPECT_ROW_ACTIONS=1` and `DBVIEWER_EXPECT_FULL_VALUES=1` for native tests.
+The pinned historical host instead exercises the negotiated fallback.
 The CI floor belongs to this plugin; Runyte's coverage threshold is unchanged.
 
 ## Remaining release gates

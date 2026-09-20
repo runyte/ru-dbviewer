@@ -28,6 +28,7 @@ impl App {
             return self.browse_command(&ctx, &command).await;
         }
         match command.as_str() {
+            "show-full" => return self.show_full_value(&ctx, false).await,
             "open" => {
                 self.create(&ctx, Content::Connections).await?;
             }
@@ -90,6 +91,9 @@ impl App {
             }
             "raw" => {
                 let (id, mut content) = self.context_view(&ctx)?;
+                if matches!(content, Content::FullValue { .. }) {
+                    return self.show_full_value(&ctx, true).await;
+                }
                 if let Content::Value { raw, .. } = &mut content {
                     *raw = !*raw;
                     self.publish(&id, content).await?;
@@ -117,6 +121,13 @@ impl App {
                 }
             }
             "cancel" => {
+                if let Some((job, cancel)) =
+                    ctx["view"].as_str().and_then(|id| self.full_jobs.get(id))
+                {
+                    cancel.cancel();
+                    self.rpc.request("job.cancel", json!({"job":job})).await?;
+                    return Ok(None);
+                }
                 let name = self.target(&ctx)?;
                 if let Some((job, cancel)) = self.connecting.get(&name) {
                     cancel.cancel();
@@ -208,7 +219,8 @@ impl App {
                     }
                     Content::Filters { .. }
                     | Content::Transactions { .. }
-                    | Content::Value { .. } => {
+                    | Content::Value { .. }
+                    | Content::FullValue { .. } => {
                         return Err("Use Tab for contextual actions".into());
                     }
                     Content::Catalog { name, tables, .. } => {
@@ -444,7 +456,7 @@ impl App {
                         )
                         .await?;
                     }
-                    Content::Value { .. } => {
+                    Content::Value { .. } | Content::FullValue { .. } => {
                         return Err("Retained value; use back to return".into());
                     }
                     Content::Review { .. } => {

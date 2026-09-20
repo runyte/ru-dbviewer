@@ -29,21 +29,45 @@ class InteractiveTests(unittest.TestCase):
  def test_navigation_json_raw_and_closed_parent(self):
   rows=self.rows();h=self.h;before=h.views[rows];jobs=len(h.jobs)
   self.invoke('activate',rows,['0']);record=h.active
-  self.assertIn('disconnect',h.views[record]['actions']);self.invoke('activate',record,['2']);value=h.active
+  self.assertNotIn('disconnect',h.views[record]['actions']);self.invoke('activate',record,['2']);value=h.active
   self.assertIn('123456789012345678901234567890',json.dumps(h.views[value]));self.invoke('activate',value,['0']);self.assertEqual(len(h.views[value]['rows']),1)
-  self.invoke('activate',value,['0']);self.invoke('raw',value);self.assertIn('Original retained',h.views[value]['status']['text'])
+  self.invoke('activate',value,['0']);self.invoke('raw',value);self.assertIn('Raw value',h.views[value]['status']['text'])
   self.invoke('back',value);self.assertEqual(h.active,record);self.invoke('back',record);self.assertEqual(h.active,rows);self.assertEqual(h.views[rows],before);self.assertEqual(len(h.jobs),jobs)
-  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':record}});self.invoke('back',value);self.assertEqual(h.views[h.active]['title'],'Databases')
+  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':record}});self.invoke('back',value);self.assertEqual(h.views[h.active]['title'],'[databases]')
+ def test_truncated_json_prefix_and_raw_keep_retained_data(self):
+  payload=json.dumps({'assignment':{'members':[{'id':i,'name':'member'} for i in range(4000)]}},separators=(',',':'))
+  with closing(sqlite3.connect(self.path)) as c:
+   c.execute('UPDATE items SET payload=? WHERE id=1',(payload,));c.commit()
+  rows=self.rows();h=self.h;jobs=len(h.jobs)
+  self.invoke('activate',rows,['0']);record=h.active;self.invoke('activate',record,['2']);value=h.active
+  # A very broad prefix exceeds the display-row budget and retains the raw fallback.
+  self.assertIn('Preview',h.views[value]['status']['text'])
+  self.invoke('back',value);self.assertEqual(h.active,record)
+  self.assertEqual(len(h.jobs),jobs)
+  # Fewer, larger fields reproduce a truncated envelope while keeping formatting bounded.
+  payload=json.dumps({'assignment':{'members':[{'id':i,'name':'é'*300} for i in range(200)]}},separators=(',',':'),ensure_ascii=False)
+  with closing(sqlite3.connect(self.path)) as c:
+   c.execute('UPDATE items SET payload=? WHERE id=1',(payload,));c.commit()
+  self.invoke('refresh',rows);h.wait_jobs();self.invoke('activate',rows,['0']);self.invoke('activate',h.active,['2']);value=h.active
+  self.assertIn('indented JSON prefix',h.views[value]['status']['text'])
+  self.assertEqual(h.views[value]['rows'][1]['text'],'  "assignment": {')
+  self.assertEqual(h.views[value]['rows'][2]['text'],'    "members": [')
+  jobs=len(h.jobs);self.invoke('raw',value)
+  retained=''.join(r['text'] for r in h.views[value]['rows'])
+  expected=payload.encode()[:65536].decode(errors='ignore')+' …'
+  self.assertEqual(retained,expected)
+  self.invoke('raw',value);self.assertIn('indented JSON prefix',h.views[value]['status']['text'])
+  self.assertEqual(len(h.jobs),jobs)
  def test_filters_all_any_disabled_sort_page_and_generated_sql(self):
   rows=self.rows();h=self.h;self.invoke('filters',rows);filters=h.active
   self.filter(filters,'name','contains (literal)','a');self.filter(filters,'id','greater than','1')
   self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual([r['cells'][0]['text'] for r in h.views[rows]['rows']],['2','4'])
   self.invoke('sort',rows);self.choice('id');self.submit(choice='Descending');h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'4')
-  self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs();self.assertIn('page size 1',h.views[rows]['status']['text']);self.invoke('next',rows);h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'2')
+  self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs();self.assertTrue('Page size: 1' in h.views[rows]['status']['text'] or {'label':'Page size','value':'1'} in h.views[rows].get('metadata',[]));self.invoke('next',rows);h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'2')
   jobs=len(h.jobs);self.invoke('browse-sql',rows);self.assertEqual(len(h.jobs),jobs);b=list(h.buffers)[-1];sql=h.buffers[b];self.assertNotIn('?',sql);self.assertIn('ORDER BY',sql)
   with closing(sqlite3.connect(self.path)) as c:self.assertEqual(c.execute(sql).fetchall()[0][0],2)
   self.invoke('return',buffer=b);self.assertEqual(h.active,rows)
-  self.invoke('match',filters);self.submit(choice='Match ANY (OR)');self.invoke('toggle-filter',filters,['1']);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertIn('page size 1',h.views[rows]['status']['text'])
+  self.invoke('match',filters);self.submit(choice='Match ANY (OR)');self.invoke('toggle-filter',filters,['1']);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertTrue('Page size: 1' in h.views[rows]['status']['text'] or {'label':'Page size','value':'1'} in h.views[rows].get('metadata',[]))
   self.invoke('remove-filter',filters,['1']);self.invoke('clear-filters',filters);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'4')
  def test_null_empty_literal_and_edit(self):
   rows=self.rows();h=self.h;self.invoke('filters',rows);f=h.active
@@ -121,5 +145,63 @@ class RowActionTests(InteractiveTests):
   actions=h.views[databases]['rows'][0]['actions'];self.assertIn('commit',actions);self.assertIn('rollback',actions)
   self.invoke('rollback',databases,['0']);h.wait_jobs()
   self.assertNotIn('commit',h.views[databases]['rows'][0]['actions'])
+
+class PresentationTests(RowActionTests):
+ features=['view-row-actions','view-action-presentation','view-metadata','view-document','job-feedback']
+ def test_new_table_does_not_inherit_closed_parent_filters_or_page_size(self):
+  with closing(sqlite3.connect(self.path)) as c:
+   c.executescript("CREATE TABLE zother(other TEXT); INSERT INTO zother VALUES('first'),('second');")
+  rows=self.rows();h=self.h
+  catalog=next(view for view,model in h.views.items() if model['title']=='[tables] ledger')
+  self.invoke('filters',rows);filters=h.active;self.filter(filters,'name','equals','alpha')
+  self.invoke('apply-filters',filters);h.wait_jobs()
+  self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs()
+  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':catalog}})
+  self.invoke('back',rows);self.assertEqual(h.views[h.active]['title'],'[databases]')
+  self.invoke('activate',h.active,['0']);h.wait_jobs()
+  self.invoke('activate',h.active,['1']);h.wait_jobs();model=h.views[h.active]
+  self.assertEqual(model['title'],'[rows] ledger › zother')
+  self.assertEqual(model['columns'][0]['label'],'other')
+  self.assertEqual(len(model['rows']),2)
+  self.assertIn({'label':'Page size','value':'100'},model['metadata'])
+
+ def test_record_number_keeps_browse_page_size_after_status_refresh(self):
+  rows=self.rows();h=self.h
+  catalog=next(view for view,model in h.views.items() if model['title']=='[tables] ledger')
+  self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs()
+  self.invoke('next',rows);h.wait_jobs();self.invoke('activate',rows,['0']);record=h.active
+  self.assertEqual(h.views[record]['title'],'[record] ledger › items › row 2')
+  self.invoke('disconnect',catalog)
+  self.assertEqual(h.views[record]['title'],'[record] ledger › items › row 2')
+
+ def test_readable_discovery_metadata_identity_and_full_menu(self):
+  h=self.h
+  self.assertFalse(h.commands['activate']['presentation']['listed'])
+  self.assertTrue(h.commands['activate']['primary'])
+  self.assertEqual(h.commands['connect-new']['presentation']['label'],'Add database')
+  self.assertEqual(h.commands['show-full']['presentation']['group'],'Inspect')
+  self.invoke('open');self.assertEqual(h.views[h.active]['title'],'[databases]')
+  catalog=self.connect();model=h.views[catalog]
+  self.assertEqual(model['title'],'[tables] ledger')
+  self.assertIn({'label':'Database path','value':str(self.path)},model['metadata'])
+  self.assertNotIn('detail',model)
+  self.invoke('activate',catalog,['0']);h.wait_jobs();rows=h.active;model=h.views[rows]
+  self.assertEqual(model['title'],'[rows] ledger › items')
+  self.assertIn({'label':'Rows','value':'1–4'},model['metadata'])
+  self.assertTrue(any(entry['label']=='Filters' for entry in model['metadata']))
+  self.assertNotIn('RETAINED',str(model));self.assertNotIn('cell previews',str(model));self.assertNotIn('detail',model)
+  self.assertEqual(model['action_presentation']['activate']['label'],'Open row')
+  self.invoke('activate',rows,['1']);record=h.active;model=h.views[record]
+  self.assertEqual(model['title'],'[record] ledger › items › row 2')
+  self.assertNotIn('show-full',model['actions'])
+  self.assertIn('show-full',model['rows'][1]['actions'])
+  self.assertNotIn('show-full',model['rows'][2].get('actions',[]))
+  self.invoke('back',record);self.invoke('activate',rows,['0']);record=h.active
+  self.invoke('activate',record,['2']);model=h.views[h.active]
+  self.assertEqual(model['title'],'[value] ledger › items › row 1 › payload · JSON')
+  self.assertIn('show-full',model['actions']);self.assertNotIn('disconnect',model['actions'])
+  self.assertIn({'label':'Database type','value':'TEXT'},model['metadata'])
+  self.invoke('raw',h.active)
+  self.assertEqual(h.views[h.active]['action_presentation']['raw']['label'],'Show formatted value')
 
 if __name__=='__main__':unittest.main()

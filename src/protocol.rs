@@ -39,6 +39,7 @@ struct Inner {
     pub cancelled: Mutex<HashMap<String, CancellationToken>>,
     early: Mutex<Vec<String>>,
     serial: AtomicU64,
+    request_order: Mutex<()>,
     stopped: AtomicBool,
     slots: Semaphore,
 }
@@ -63,6 +64,7 @@ impl Rpc {
             cancelled: Mutex::new(HashMap::new()),
             early: Mutex::new(Vec::new()),
             serial: AtomicU64::new(0),
+            request_order: Mutex::new(()),
             stopped: AtomicBool::new(false),
             slots: Semaphore::new(12),
         }));
@@ -142,14 +144,22 @@ impl Rpc {
             .slots
             .try_acquire()
             .map_err(|_| "Too many host requests")?;
-        let id = format!("p:{}", self.0.serial.fetch_add(1, Ordering::Relaxed) + 1);
-        let (tx, rx) = oneshot::channel();
-        self.0.pending.lock().unwrap().insert(id.clone(), tx);
-        if let Err(e) = self.send(json!({"type":"request","id":id,"method":method,"params":params}))
-        {
-            self.0.pending.lock().unwrap().remove(&id);
-            return Err(e);
-        }
+        let rx = {
+            // ID allocation and enqueue are one ordered operation. Large staged
+            // frames and small cancellation requests originate on different workers.
+            // No socket IO or asynchronous wait occurs while this lock is held.
+            let _order = self.0.request_order.lock().unwrap();
+            let id = format!("p:{}", self.0.serial.fetch_add(1, Ordering::Relaxed) + 1);
+            let (tx, rx) = oneshot::channel();
+            self.0.pending.lock().unwrap().insert(id.clone(), tx);
+            if let Err(error) =
+                self.send(json!({"type":"request","id":id,"method":method,"params":params}))
+            {
+                self.0.pending.lock().unwrap().remove(&id);
+                return Err(error);
+            }
+            rx
+        };
         match tokio::time::timeout(Duration::from_secs(8), rx).await {
             Ok(Ok(result)) => result,
             _ => {
@@ -314,4 +324,56 @@ fn read_loop(rpc: &Rpc, events: async_mpsc::Sender<Value>, wake: UnixStream) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_large_frames_and_control_requests_keep_wire_ids_in_order() {
+        let (wake, _peer) = UnixStream::pair().unwrap();
+        let (output, receiver) = mpsc::sync_channel(8);
+        let rpc = Rpc(Arc::new(Inner {
+            output,
+            wake,
+            pending: Mutex::new(HashMap::new()),
+            cancelled: Mutex::new(HashMap::new()),
+            early: Mutex::new(Vec::new()),
+            serial: AtomicU64::new(0),
+            request_order: Mutex::new(()),
+            stopped: AtomicBool::new(false),
+            slots: Semaphore::new(12),
+        }));
+        let host = rpc.clone();
+        let reader = std::thread::spawn(move || {
+            for expected in 1..=128 {
+                let frame = receiver.recv().unwrap();
+                let message: Value = serde_json::from_slice(&frame).unwrap();
+                let id = message["id"].as_str().unwrap();
+                assert_eq!(id, format!("p:{expected}"));
+                let reply = host.0.pending.lock().unwrap().remove(id).unwrap();
+                reply.send(Ok(json!({}))).unwrap();
+            }
+        });
+        let mut workers = tokio::task::JoinSet::new();
+        for worker in 0..8 {
+            let rpc = rpc.clone();
+            workers.spawn(async move {
+                for _ in 0..16 {
+                    let text = if worker % 2 == 0 {
+                        "\\\"é".repeat(16_000)
+                    } else {
+                        String::new()
+                    };
+                    rpc.request("fixture", json!({"text":text})).await.unwrap();
+                }
+            });
+        }
+        while let Some(result) = workers.join_next().await {
+            result.unwrap();
+        }
+        reader.join().unwrap();
+        assert!(rpc.0.pending.lock().unwrap().is_empty());
+    }
 }

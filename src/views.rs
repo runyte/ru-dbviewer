@@ -8,6 +8,15 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum Content {
     Connections,
+    FullValue {
+        title: String,
+        name: String,
+        data: Arc<Data>,
+        row: usize,
+        column: usize,
+        raw: bool,
+        document: Option<Arc<crate::full_value::Document>>,
+    },
     Filters {
         name: String,
         source: String,
@@ -96,7 +105,8 @@ impl Content {
     pub fn name(&self) -> Option<&str> {
         match self {
             Self::Connections | Self::Transactions { .. } => None,
-            Self::Filters { name, .. }
+            Self::FullValue { name, .. }
+            | Self::Filters { name, .. }
             | Self::Value { name, .. }
             | Self::Review { name, .. }
             | Self::Catalog { name, .. }
@@ -105,6 +115,17 @@ impl Content {
     }
     pub fn model(&self, state: &str) -> Value {
         match self {
+            Self::FullValue { name, document, .. } => document.as_ref().map_or_else(
+                || {
+                    text_model(
+                        &format!("[value] {name}"),
+                        "Loading full value…",
+                        vec![],
+                        &["back"],
+                    )
+                },
+                |document| document.model(&format!("[value] {name}"), false, false),
+            ),
             Self::Filters { .. } => text_model("Filters", state, vec![], &["back"]),
             Self::Transactions { .. } => text_model("Transactions", state, vec![], &["back"]),
             Self::Value {

@@ -1,0 +1,52 @@
+{
+  "presentation": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "label"
+    ],
+    "properties": {
+      "label": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160
+      },
+      "group": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "order": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      },
+      "listed": {
+        "type": "boolean"
+      }
+    }
+  },
+  "metadata": {
+    "type": "array",
+    "maxItems": 16,
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "value"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  }
+}

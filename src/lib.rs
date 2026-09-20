@@ -25,3 +25,7 @@ pub mod browse;
 pub mod documents;
 pub mod inspection;
 pub mod paths;
+
+pub mod result_storage;
+
+pub mod full_value;

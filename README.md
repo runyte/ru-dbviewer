@@ -81,21 +81,29 @@ Local acceptance is recorded in [VALIDATION.md](VALIDATION.md).
    PostgreSQL accepts a hostname or Unix socket directory, port, database and user.
 3. PostgreSQL passwords come from a masked prompt or a named inherited environment
    variable. An empty prompt supports socket or certificate authentication.
-4. In the catalog, move onto a table row and press Enter. Status/header lines
-   are not selectable data rows. Press Enter over a result row to inspect its
-   fields, then Enter over a field to inspect its retained value.
-5. `-` or **Tab → back** returns through Value → Record → Rows → Catalog →
-   Databases. Parents retain their cursor, viewport and results; returning never
-   replays SQL. If a parent closed, back opens Databases. Closing old views frees
-   the twelve-view budget.
-6. In Databases, **Tab → profile-actions** opens a menu for the selected profile;
-   disconnected profiles offer connect, live profiles offer mode/query/disconnect,
-   and only unresolved outcomes offer acknowledgement. Other database views expose
-   **query**, **mode**, **disconnect**, **transactions**,
-   **commit** and **rollback**, alongside browsing actions. Actions use the owning
-   database or selected profile, with captured connection-generation checks.
-   Back never disconnects. Disconnecting a pending transaction requires explicit
-   rollback confirmation; a running operation must be cancelled first.
+4. Titles identify the current view: **[databases]**, **[tables]**, **[rows]**,
+   **[record]**, **[value]**, **[results]**, **[schema]**, **[filters]** or
+   **[transactions]**. Database, table, row and field breadcrumbs remain visible;
+   PostgreSQL table names include their schema. Labelled metadata above the content
+   shows the database path, access mode, rows, filters and sort as relevant.
+5. Select a table row and press Enter, then Enter on a result row to inspect its
+   fields, then Enter on a field to open its formatted preview. Metadata lines are
+   not selectable database rows. `-` or **Tab → Back** returns through Value →
+   Record → Rows → Tables → Databases. Parents retain their cursor, viewport and
+   results; returning never replays SQL. If a parent closed, Back opens Databases.
+6. Tab opens one searchable menu with relevant commands grouped under headings
+   such as **Inspect**, **Navigation**, **Filter and sort**, **Columns and paging**,
+   **Table**, **SQL**, **Database** and **Pending changes**. Headings are not actions.
+   Enter performs the current primary action without a separate Activate menu entry.
+   **Add database** creates a profile; **Connect** appears for a disconnected profile.
+   Pending Commit/Roll back actions retain their confirmations and connection checks.
+   Record/value menus focus on inspection and navigation; global `db-*` aliases
+   keep database lifecycle commands available. Back never disconnects.
+7. **Tab → Show full value**, from a selected record field or its preview, loads
+   the complete captured value into one read-only document. Normal search,
+   selections and copying cover all its text. **Show raw text** / **Format JSON**
+   switches display without querying the database. `::db-cancel` from the loading
+   value cancels its display job; Back returns directly to its record.
 
 `::db` opens saved profiles. Select a profile and press Enter to connect or browse.
 At most two databases may be connected, with one operation per connection.
@@ -147,7 +155,7 @@ or changing access mode, use `::db-use` again for existing SQL buffers.
 
 ## Writes and transactions
 
-Connections start read-only. **mode** on a selected connected profile or catalog
+Connections start read-only. **Access mode** on a selected connected profile or catalog
 opens exactly **READ ONLY** and **READ AND WRITE**, with the current choice in the
 title. Switching to writable requires confirmation; read-only does not. Pending
 changes must be committed or rolled back before choosing another mode. Reconnect
@@ -162,10 +170,10 @@ workspace shutdown with an activity lease and roll back after at most five idle
 minutes. Cancelling the activity rolls back. Closing a result buffer does not
 commit. Detach retains the plugin, connection and pending transaction.
 
-`::db-transactions` and **Tab → transactions** show each pending database, state,
+`::db-transactions` and **Tab → Transactions** show each pending database, state,
 age at refresh, bounded statement summary and known affected-row count. Unknown
-counts stay unknown. Select a row and use **Tab → commit**, **rollback**, or
-**disconnect**. The list updates on settlement, failures and idle rollback; age
+counts stay unknown. Select a row and use **Tab → Commit**, **Roll back**, or
+**Disconnect**. The list updates on settlement, failures and idle rollback; age
 display adds no polling timer. Summaries remain in memory, never saved profile
 state or logs.
 
@@ -183,18 +191,18 @@ Rollback cannot undo external function effects or PostgreSQL sequence advances.
 
 ## Results and limits
 
-Browse pages default to 100 rows; **page-size** accepts 1–100. Status shows the
+Browse pages default to 100 rows; **Page size** accepts 1–100. Top metadata shows the
 visible range and page size, including empty pages, without claiming a total.
 Database paging issues a bounded query; SQL-result paging reads retained data.
-**sort** chooses a column and direction; primary keys break ties where available.
+**Sort rows** chooses a column and direction; primary keys break ties where available.
 Without suitable keys, ordering can be unstable. External writes can shift offset
 pages. No automatic COUNT query or long-lived browsing snapshot is created.
 
-**filters** opens an editable draft. Add, edit, remove, temporarily disable or clear
-up to sixteen conditions, then **apply-filters** returns to page one. **match**
+**Edit filters** opens an editable draft. Add, edit, remove, temporarily disable or clear
+up to sixteen conditions, then **Apply filters** returns to page one. **Match all or any**
 chooses ALL (AND) or ANY (OR) for enabled conditions. Sorting, page size and column
 choices survive application; subsequent pages retain the filters. Active filters
-appear in the view detail. Nested Boolean groups remain a SQL use case.
+appear above the rows under **Filters**, beside **Sort** and **Page size**. Nested Boolean groups remain a SQL use case.
 
 Column names use stable ordinal identities even when labels are duplicate or
 empty. Filter values are bounded to 4,096 bytes and always bound parameters.
@@ -206,20 +214,36 @@ SQLite applies its NUMERIC conversion and dynamic typing. Other columns compare
 server text representations. Conversion failures report an error and do not apply
 the condition. Disabled conditions are excluded from SQL.
 
-**browse-sql** creates an unsaved, independently runnable statement with selected
+**Open current browse as SQL** creates an unsaved, independently runnable statement with selected
 columns, enabled filters, ordering, and the current LIMIT/OFFSET page. It uses
 quoted identifiers and dialect-specific literal rendering, with no unresolved
 parameters. Creation never executes the statement.
 
-SQL results retain at most 1,000 rows and 4 MiB per result, with 64 KiB per value.
-Truncation is marked. Hitting the row or total-size limit rolls back writable
-execution. Clipping an individual value preserves the transaction and connection.
-Result paging and value inspection never rerun SQL. Close old database buffers
-when the twelve-view limit is reached. Full record/value views share retained
-result data; independent result views each own their bounded data.
+SQL results retain at most 1,000 rows and 4 MiB of previews per result, with
+64 KiB per preview. `…` marks shortened text. Hitting the row or total preview
+limit explicitly marks an incomplete result and rolls back writable execution;
+shortening an individual preview preserves the transaction and connection.
+
+The original database read captures larger complete values in private anonymous
+temporary files, never by replaying SQL. Record/value descendants share those
+immutable sources even if the database changes. Files are unlinked when created,
+closed on final-reference release, and disappear after process termination; no
+values go into profiles, query history or durable cache files. Limits are 8 MiB per
+complete textual representation, 32 MiB per result, 64 MiB and 32 result files per
+plugin process. An unavailable source retains its preview and explains why full
+inspection is unavailable. Close old database buffers to release retained sources
+or the twelve-view budget.
+
+Full inspection requires negotiated `view-document` and `job-feedback` features
+of `runyte-1`. Older hosts retain previews and navigation without receiving new
+wire fields; they cannot load full documents through this action. Readable action
+presentation and top metadata independently negotiate `view-action-presentation`
+and `view-metadata`; older hosts use legacy menus and a labelled status summary.
+Command identifiers and aliases remain unchanged: spaces belong in visible labels,
+so `connect-new` remains the binding identifier for **Add database**.
 
 Native tables show up to eight selected columns, clipped by Runyte to 32 terminal
-cells each. **columns** is a searchable checklist: toggle named entries and choose
+cells each. **Choose columns** is a searchable checklist: toggle named entries and choose
 **Apply selections**. **Find column…** searches all names; paged choices keep wide
 results bounded. Selections survive searches. Duplicate column labels remain distinct. Enter opens record
 and value inspection. Wide records shorten field previews to fit the view budget;
@@ -228,19 +252,32 @@ appear as `(unnamed)` with distinct column identities. NULL, empty strings, bina
 explicit; control characters are escaped. PostgreSQL values use their server text
 representation, preserving decimals, arrays, enums, domains and extension types.
 
-Complete JSON values open as an indented tree; Enter expands/collapses containers
-and **raw** shows the exact retained text. Duplicate keys and number spelling are
-preserved, including numbers larger than machine integers. Parsing is limited to
-64 levels and 4,096 nodes; deeper/larger trees fall back to readable retained text.
-A retained-data truncation marker means content is missing and JSON inspection is
-disabled. Compact row/tree previews may clip display text without truncating the
-retained value. Raw inspection escapes controls and preserves NULL/binary markers.
+JSON previews open as an indented tree when they fit its 64-level/4,096-node
+budget. Enter expands/collapses containers. A shortened prefix can be indented
+without inventing missing delimiters and ends with `…`; malformed or oversized
+preview trees remain readable text. Raw preview mode preserves the retained
+prefix, with controls escaped.
+
+Full-value formatting is separate from that optional preview tree: it preserves
+duplicate keys, exact number spellings, Unicode and every string, including values
+with more than 10,000 formatted lines. Original raw text remains available. Complete
+text and formatted output are each bounded to 8 MiB and 250,000 lines; if formatting
+would exceed the bound, complete raw text is shown with an explanation. Publication
+has a 16 MiB encoded-model limit. A refused publication keeps the previous preview
+readable and offers a retry. One cancellable display job runs at a time, with a
+60-second deadline; it never commits or rolls back a pending database transaction.
+
+Binary values and invalid UTF-8 use complete labelled hexadecimal representations
+within the same bound. Text with unsupported controls uses a labelled lossless
+escaped representation: controls become `\u{hex}` and literal backslashes are
+doubled. Copying copies the displayed representation. Ordinary UTF-8 text, tabs
+and newlines remain unchanged in raw mode. NULL and empty text need no full load.
 
 SQL input is limited to 256 KiB, and encoded host/model limits can impose a smaller
 limit on heavily escaped content. The default query timeout is 30 seconds;
 configure `settings: {query_timeout_seconds: 60}` in the plugin entry (1–300).
 Connections have a ten-second timeout. Driver allocations for one exceptionally
-large field can precede truncation; retained-data limits are not hard RSS limits.
+large field can precede bounded capture; retention limits are not hard RSS limits.
 There is no idle database polling.
 
 ## Development and checks
@@ -253,7 +290,7 @@ cargo build --locked
 python3 tests/wire.py
 python3 tests/interactive.py
 PG_BIN=/path/to/postgresql/bin python3 scripts/postgres_tests.py
-RUNYTE_BIN=/path/to/runyte python3 tests/native.py
+RUNYTE_BIN=/path/to/current/runyte DBVIEWER_EXPECT_ROW_ACTIONS=1 DBVIEWER_EXPECT_FULL_VALUES=1 python3 tests/native.py
 ```
 
 The wire tests need Python's `jsonschema` package, only during development. Native

@@ -28,11 +28,24 @@ class Host:
  def __init__(self, directory, version='0.3.0', features=()):
   self.features=list(features);schema=copy.deepcopy(SCHEMA)
   if 'view-row-actions' in features:schema['$defs']['row']['properties']['actions']=json.loads((ROOT/'fixtures/view-row-actions.json').read_text())['row_actions']
+  extension=json.loads((ROOT/'fixtures/view-presentation.json').read_text())
+  if 'view-action-presentation' in features:
+   schema['$defs']['command']['properties']['presentation']=extension['presentation']
+   for name in ('model','viewHeader'):
+    schema['$defs'][name]['properties']['action_presentation']={'type':'object','maxProperties':64,'additionalProperties':extension['presentation']}
+  if 'view-metadata' in features:
+   for name in ('model','viewHeader'):schema['$defs'][name]['properties']['metadata']=extension['metadata']
+  if 'view-document' in features:
+   for name in ('model','viewHeader'):schema['$defs'][name]['properties']['document']={'type':'string','maxLength':8388608}
+   schema['$defs']['view.stage.open']['properties']['params']['properties']['bytes']['maximum']=16777216
+   schema['$defs']['view.stage.write']['properties']['params']['properties']['offset']['maximum']=16777216
+  if 'job-feedback' in features:schema['$defs']['job.finish']['properties']['params']['properties']['message']={'type':'string','minLength':1,'maxLength':1024}
+  self.model_validator=Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/model'})
   self.validator=Draft202012Validator({**schema,'anyOf':[{'$ref':'#/$defs/pluginMessage'}]})
-  self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0)
+  self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0,env={**os.environ,'TMPDIR':directory,'XDG_CONFIG_HOME':str(Path(directory)/'config')})
   self.selector=selectors.DefaultSelector();self.selector.register(self.child.stdout,selectors.EVENT_READ)
-  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
-  self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();VALIDATOR.validate(self.registration)
+  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
+  self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();self.validator.validate(self.registration)
   self.commands={x['name']:x for x in self.registration['commands']}
   self.send({**REGISTERED,'runyte':'>=0.3.0, <0.4.0','capabilities':self.registration['required_capabilities'],'features':[f for f in self.features if f in self.registration['optional_features']]})
  def send(self,msg):self.child.stdin.write((json.dumps(msg)+'\n').encode());self.child.stdin.flush()
@@ -75,12 +88,34 @@ class Host:
    for action in p['model'].get('actions',[]):assert self.commands[action]['context']=='view',action
    id=f'v:{len(self.views)+1}';self.views[id]=p['model'];self.revisions[id]='m:1';result={'view':id,'revision':'m:1'}
   elif method=='pane.show':self.active=p['view']
+  elif method=='view.close':self.views.pop(p['view'],None);self.revisions.pop(p['view'],None)
   elif method=='view.publish':
    assert p['expected_revision']==self.revisions[p['view']]
    for action in p['model'].get('actions',[]):assert self.commands[action]['context']=='view',action
    self.views[p['view']]=p['model'];self.revisions[p['view']]=f'm:{int(self.revisions[p["view"]].split(":")[1])+1}';result={'view':p['view'],'revision':self.revisions[p['view']]}
+  elif method=='view.stage.open':
+   assert p['kind']=='model';assert p['expected_revision']==self.revisions[p['view']]
+   self.stage_serial+=1;stage=f'st:{self.stage_serial}';self.stages[stage]={'view':p['view'],'revision':p['expected_revision'],'bytes':p['bytes'],'data':bytearray()};result={'stage':stage,'bytes':p['bytes']}
+  elif method=='view.stage.write':
+   stage=self.stages[p['stage']];data=p['text'].encode();assert p['offset']==len(stage['data']);assert len(data)<=131072;assert len(stage['data'])+len(data)<=stage['bytes'];stage['data'].extend(data);result={'offset':len(stage['data'])}
+  elif method=='view.stage.commit':
+   if self.cancel_commit:
+    self.cancel_commit=False;self.pending_commit=msg
+    job=next(j for j,state in self.jobs.items() if state=='running')
+    self.send({'type':'event','event':'job.cancel_requested','sequence':'110','data':{'job':job}});return
+   stage=self.stages.pop(p['stage']);view=stage['view'];assert len(stage['data'])==stage['bytes'];model=json.loads(stage['data'].decode());self.model_validator.validate(model)
+   if self.revisions.get(view)!=stage['revision']:
+    self.send({'type':'response','id':msg['id'],'error':{'code':'conflict','message':'fixture revision changed'}});return
+   for action in model.get('actions',[]):assert self.commands[action]['context']=='view'
+   self.views[view]=model;self.revisions[view]=f'm:{int(self.revisions[view].split(":")[1])+1}';result={'view':view,'revision':self.revisions[view]}
+  elif method=='view.stage.close':
+   self.stages.pop(p['stage'],None)
+   if self.pending_commit and self.pending_commit['params']['stage']==p['stage']:
+    self.send({'type':'response','id':self.pending_commit['id'],'error':{'code':'cancelled','message':'staged preparation cancelled'}});self.pending_commit=None
+
   elif method=='job.create':id=f'j:{len(self.jobs)+1}';self.jobs[id]='running';result={'job':id}
-  elif method=='job.finish':self.jobs[p['job']]=p['state']
+  elif method=='job.update':pass
+  elif method=='job.finish':self.jobs[p['job']]=p['state'];self.job_messages[p['job']]=p.get('message')
   elif method=='job.cancel':self.send({'type':'event','event':'job.cancel_requested','sequence':'1','data':{'job':p['job']}})
   elif method.startswith('ui.'):
    id=f'i:{self.serial}:{len(self.requests)}';self.inputs[id]=p;result={'surface':id}
@@ -143,7 +178,7 @@ class WireTests(unittest.TestCase):
  def test_read_result_limit_and_paging_do_not_execute_again(self):
   self.connect();h=self.h;self.good(h.invoke('query',h.active));b=list(h.buffers)[-1]
   h.buffers[b]='WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1100) SELECT x FROM n'
-  self.good(h.invoke('run',buffer=b));h.wait_jobs();v=h.active;self.assertIn('TRUNCATED',h.views[v]['status']['text']);jobs=len(h.jobs)
+  self.good(h.invoke('run',buffer=b));h.wait_jobs();v=h.active;self.assertIn('Result incomplete',h.views[v]['status']['text']);jobs=len(h.jobs)
   self.good(h.invoke('next',v));self.assertEqual(h.views[v]['rows'][0]['cells'][0]['text'],'101');self.assertEqual(len(h.jobs),jobs)
  def test_large_frames_drain_without_waiting_for_another_frame(self):
   # Force short writes where supported; no writer may buffer the frame's final newline.
@@ -231,7 +266,7 @@ class WireTests(unittest.TestCase):
   c=sqlite3.connect(self.path);c.executemany('INSERT INTO items VALUES(?,?)',[(i,str(i)) for i in range(3,230)]);c.commit();c.close()
   self.connect();h=self.h;v=h.active;self.good(h.invoke('activate',v,['0']));h.wait_jobs();v=h.active
   self.good(h.invoke('next',v));h.wait_jobs();before=h.views[v]['rows']
-  self.good(h.invoke('refresh',v));h.wait_jobs();self.assertEqual(h.views[v]['rows'],before);self.assertIn('page 2',h.views[v]['title'])
+  self.good(h.invoke('refresh',v));h.wait_jobs();self.assertEqual(h.views[v]['rows'],before);self.assertIn('Rows: 101–200',h.views[v]['status']['text'])
   self.assertIn('schema',h.views[v]['actions']);self.good(h.invoke('schema',v));h.wait_jobs();v=h.active
   self.assertEqual(h.views[v]['columns'][0]['label'],'kind');self.assertEqual(len(h.views[v]['rows']),2)
 

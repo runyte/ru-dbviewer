@@ -21,13 +21,27 @@ impl Database {
         }
     }
     pub async fn open(profile: &Profile, writable: bool, password: String) -> Result<Self> {
+        Self::open_with_storage(
+            profile,
+            writable,
+            password,
+            crate::result_storage::Storage::global(),
+        )
+        .await
+    }
+    pub async fn open_with_storage(
+        profile: &Profile,
+        writable: bool,
+        password: String,
+        storage: crate::result_storage::Storage,
+    ) -> Result<Self> {
         profile.validate()?;
         match profile {
             Profile::Sqlite { path, .. } => Ok(Self::Sqlite(
-                sqlite::Sqlite::open(path.clone(), writable).await?,
+                sqlite::Sqlite::open(path.clone(), writable, storage).await?,
             )),
             Profile::Postgres { .. } => Ok(Self::Postgres(
-                postgres::Postgres::open(profile, password).await?,
+                postgres::Postgres::open(profile, password, storage).await?,
             )),
         }
     }

@@ -127,9 +127,15 @@ async fn postgres_types_transactions_and_cancellation() {
         certificate: String::new(),
         key: String::new(),
     };
-    let db = Database::open(&p, true, "dbviewer-test-only".into())
-        .await
-        .unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let db = Database::open_with_storage(
+        &p,
+        true,
+        "dbviewer-test-only".into(),
+        ru_dbviewer::result_storage::Storage::new(capture_dir.path().into()),
+    )
+    .await
+    .unwrap();
     db.execute(
         "CREATE TABLE IF NOT EXISTS dbviewer_test(id bigint primary key, name text)".into(),
         true,
@@ -180,12 +186,36 @@ async fn postgres_types_transactions_and_cancellation() {
             .await
             .unwrap();
         assert!(data.cells_truncated);
+        assert_eq!(
+            data.rows[0][0].load_full().await.unwrap().unwrap(),
+            "x".repeat(70000)
+        );
         assert!(!data.truncated);
         assert!(db.usable());
         if writable {
             db.settle(true).await.unwrap();
         }
     }
+    let captured = db.execute("UPDATE dbviewer_test SET name=repeat('é', 40000) || 'sentinel' WHERE id=2 RETURNING name".into(), true, token(), 5).await.unwrap();
+    db.settle(false).await.unwrap();
+    assert_eq!(
+        captured.rows[0][0].load_full().await.unwrap().unwrap(),
+        "é".repeat(40000) + "sentinel"
+    );
+    assert_eq!(
+        captured.rows[0][0].load_full().await.unwrap().unwrap(),
+        "é".repeat(40000) + "sentinel"
+    );
+    let unchanged = db
+        .execute(
+            "SELECT name FROM dbviewer_test WHERE id=2".into(),
+            false,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.rows[0][0].text.as_deref(), Some("committed"));
     let tables = db.catalog(false, token()).await.unwrap();
 
     let unusual = ru_dbviewer::db::Table {
@@ -349,8 +379,15 @@ async fn postgres_client_certificate_and_unix_socket() {
 
 #[tokio::test]
 async fn sqlite_foreign_keys_large_values_and_duplicate_labels() {
-    let (_dir, p) = fixture();
-    let db = Database::open(&p, true, String::new()).await.unwrap();
+    let (dir, p) = fixture();
+    let db = Database::open_with_storage(
+        &p,
+        true,
+        String::new(),
+        ru_dbviewer::result_storage::Storage::new(dir.path().into()),
+    )
+    .await
+    .unwrap();
     db.execute(
         "CREATE TABLE children(id INTEGER REFERENCES items(id))".into(),
         true,
@@ -514,8 +551,15 @@ async fn postgres_lost_commit_reply_is_unknown_without_replay() {
 
 #[tokio::test]
 async fn sqlite_clipped_cells_preserve_writable_transaction() {
-    let (_dir, p) = fixture();
-    let db = Database::open(&p, true, String::new()).await.unwrap();
+    let (dir, p) = fixture();
+    let db = Database::open_with_storage(
+        &p,
+        true,
+        String::new(),
+        ru_dbviewer::result_storage::Storage::new(dir.path().into()),
+    )
+    .await
+    .unwrap();
     for sql in [
         "SELECT zeroblob(32768)",
         "INSERT INTO items VALUES(3, 'third', 1) RETURNING zeroblob(40000)",
@@ -686,4 +730,147 @@ async fn postgres_interactive_browse_parameters_and_generated_sql() {
         .await
         .unwrap();
     browse_filter_contract(&db, "public").await;
+}
+
+#[tokio::test]
+async fn sqlite_full_capture_preserves_original_results_without_replay() {
+    use ru_dbviewer::{result_storage::Storage, results::Representation};
+    let (dir, profile) = fixture();
+    let storage = Storage::new(dir.path().into());
+    let db = Database::open_with_storage(&profile, true, String::new(), storage.clone())
+        .await
+        .unwrap();
+    let data = db.execute("SELECT printf('%.*c', 70000, 'x') || 'sentinel', zeroblob(40000), CAST(zeroblob(40000) || x'80' AS TEXT)".into(), false, token(), 5).await.unwrap();
+    assert!(
+        data.rows[0]
+            .iter()
+            .all(|c| c.truncated && c.full_available())
+    );
+    assert_eq!(storage.usage().1, 1);
+    assert!(
+        data.rows[0][0]
+            .load_full()
+            .await
+            .unwrap()
+            .unwrap()
+            .ends_with("sentinel")
+    );
+    assert_eq!(data.rows[0][1].representation, Representation::Binary);
+    assert_eq!(
+        data.rows[0][1].load_full().await.unwrap().unwrap().len(),
+        80003
+    );
+    assert_eq!(data.rows[0][2].representation, Representation::InvalidUtf8);
+    assert!(
+        data.rows[0][2]
+            .load_full()
+            .await
+            .unwrap()
+            .unwrap()
+            .ends_with("80\"")
+    );
+    // Writable RETURNING is captured once; loading survives subsequent database changes.
+    let written = db
+        .execute(
+            "INSERT INTO items(name) VALUES(printf('%.*c', 70000, 'z')) RETURNING name".into(),
+            true,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    let retained = written.rows[0][0].clone();
+    drop(written);
+    db.settle(true).await.unwrap();
+    db.execute(
+        "DELETE FROM items WHERE name LIKE 'z%'".into(),
+        true,
+        token(),
+        5,
+    )
+    .await
+    .unwrap();
+    db.settle(true).await.unwrap();
+    assert_eq!(
+        retained.load_full().await.unwrap().unwrap(),
+        "z".repeat(70000)
+    );
+    assert_eq!(
+        retained.load_full().await.unwrap().unwrap(),
+        "z".repeat(70000)
+    );
+    drop(retained);
+    drop(data);
+    drop(db);
+    assert_eq!(storage.usage(), (0, 0));
+}
+
+#[tokio::test]
+async fn sqlite_unavailable_capture_keeps_preview_and_pending_transaction() {
+    use ru_dbviewer::result_storage::{MAX_FULL_VALUE, Storage};
+    let (dir, profile) = fixture();
+    let missing = Storage::new(dir.path().join("missing"));
+    let db = Database::open_with_storage(&profile, true, String::new(), missing.clone())
+        .await
+        .unwrap();
+    let data = db
+        .execute(
+            "INSERT INTO items(name) VALUES(printf('%.*c', 70000, 'q')) RETURNING name".into(),
+            true,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    assert!(!data.truncated);
+    assert!(data.rows[0][0].truncated);
+    assert!(!data.rows[0][0].full_available());
+    assert!(
+        data.rows[0][0]
+            .unavailable_reason()
+            .unwrap()
+            .contains("unavailable")
+    );
+    db.settle(true).await.unwrap();
+    assert_eq!(missing.usage(), (0, 0));
+    let oversized = db
+        .execute(
+            format!("SELECT printf('%.*c', {}, 'x')", MAX_FULL_VALUE + 1),
+            false,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    assert!(
+        oversized.rows[0][0]
+            .unavailable_reason()
+            .unwrap()
+            .contains("8 MiB")
+    );
+}
+
+#[tokio::test]
+async fn sqlite_capture_deadline_rolls_back_short_statements_before_vm_progress() {
+    let (dir, profile) = fixture();
+    let storage = ru_dbviewer::result_storage::Storage::new(dir.path().into());
+    let db = Database::open_with_storage(&profile, true, String::new(), storage.clone())
+        .await
+        .unwrap();
+    assert!(
+        db.execute(
+            "INSERT INTO items(name) VALUES('deadline') RETURNING name".into(),
+            true,
+            token(),
+            0
+        )
+        .await
+        .is_err()
+    );
+    let data = db
+        .execute("SELECT COUNT(*) FROM items".into(), false, token(), 5)
+        .await
+        .unwrap();
+    assert_eq!(data.rows[0][0].text.as_deref(), Some("2"));
+    assert_eq!(storage.usage(), (0, 0));
 }

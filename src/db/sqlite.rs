@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Sqlite {
     connection: Arc<Mutex<Connection>>,
     pub writable: bool,
+    storage: crate::result_storage::Storage,
 }
 fn error(e: rusqlite::Error) -> String {
     match e {
@@ -25,7 +26,11 @@ fn error(e: rusqlite::Error) -> String {
     }
 }
 impl Sqlite {
-    pub async fn open(path: String, writable: bool) -> Result<Self> {
+    pub async fn open(
+        path: String,
+        writable: bool,
+        storage: crate::result_storage::Storage,
+    ) -> Result<Self> {
         tokio::task::spawn_blocking(move || {
             let flags = if writable {
                 OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -57,6 +62,7 @@ impl Sqlite {
             Ok(Self {
                 connection: Arc::new(Mutex::new(c)),
                 writable,
+                storage,
             })
         })
         .await
@@ -81,11 +87,17 @@ impl Sqlite {
         seconds: u64,
     ) -> Result<Data> {
         let connection = self.connection.clone();
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        let mut capture = self
+            .storage
+            .result_with_guard(crate::result_storage::WorkGuard::new(
+                cancel.clone(),
+                deadline,
+            ));
         tokio::task::spawn_blocking(move || {
             let c = connection
                 .lock()
                 .map_err(|_| "SQLite worker failed".to_string())?;
-            let deadline = Instant::now() + Duration::from_secs(seconds);
             let stopped = cancel.clone();
             c.progress_handler(
                 1000,
@@ -119,31 +131,21 @@ impl Sqlite {
                 while let Some(row) = rows.next().map_err(error)? {
                     let mut cells = Vec::with_capacity(count);
                     for i in 0..count {
-                        let s = match row.get_ref(i).map_err(error)? {
-                            ValueRef::Null => None,
-                            ValueRef::Integer(v) => Some(v.to_string()),
-                            ValueRef::Real(v) => Some(v.to_string()),
-                            ValueRef::Text(v) => Some(match std::str::from_utf8(v) {
-                                Ok(text) => text.to_owned(),
-                                Err(_) => format!(
-                                    "[invalid UTF-8 text] x\"{}\"{}",
-                                    v.iter()
-                                        .take(32768)
-                                        .map(|b| format!("{b:02x}"))
-                                        .collect::<String>(),
-                                    if v.len() > 32768 { " [truncated]" } else { "" }
-                                ),
-                            }),
-                            ValueRef::Blob(v) => Some(format!(
-                                "x'{}'{}",
-                                v.iter()
-                                    .take(32768)
-                                    .map(|b| format!("{b:02x}"))
-                                    .collect::<String>(),
-                                if v.len() > 32768 { " [truncated]" } else { "" }
-                            )),
+                        capture.check()?;
+                        let cell = match row.get_ref(i).map_err(error)? {
+                            ValueRef::Null => Cell::capture(None, &mut capture),
+                            ValueRef::Integer(v) => {
+                                Cell::capture(Some(&v.to_string()), &mut capture)
+                            }
+                            ValueRef::Real(v) => Cell::capture(Some(&v.to_string()), &mut capture),
+                            ValueRef::Text(v) => match std::str::from_utf8(v) {
+                                Ok(text) => Cell::capture(Some(text), &mut capture),
+                                Err(_) => Cell::capture_hex(v, true, &mut capture),
+                            },
+                            ValueRef::Blob(v) => Cell::capture_hex(v, false, &mut capture),
                         };
-                        cells.push(Cell::new(s));
+                        capture.check()?;
+                        cells.push(cell);
                     }
                     if !data.push(cells) {
                         break;
@@ -161,6 +163,7 @@ impl Sqlite {
                 if cancel.is_cancelled() {
                     return Err("Query cancelled".into());
                 }
+                capture.check()?;
                 Ok(data)
             })();
             c.progress_handler(0, None::<fn() -> bool>).map_err(error)?;

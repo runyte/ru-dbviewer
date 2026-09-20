@@ -20,6 +20,11 @@ impl App {
     pub(super) async fn complete(&mut self, done: Completion) -> Result<()> {
         let done = match done {
             Completion {
+                job,
+                view,
+                result: Work::Full(done),
+            } => return self.complete_full_value(job, view, done).await,
+            Completion {
                 result: Work::Path(path),
                 ..
             } => return self.complete_path(path).await,
@@ -29,7 +34,7 @@ impl App {
         let mut failure = None;
 
         let changed = match &done.result {
-            Work::Path(_) => unreachable!(),
+            Work::Path(_) | Work::Full(_) => unreachable!(),
             Work::Connect(p, ..) => p.name().to_owned(),
             Work::Catalog(n, ..)
             | Work::Data(n, ..)
@@ -37,7 +42,7 @@ impl App {
             | Work::Failed(n, ..) => n.clone(),
         };
         match done.result {
-            Work::Path(_) => unreachable!(),
+            Work::Path(_) | Work::Full(_) => unreachable!(),
             Work::Connect(p, write, result) => {
                 let was_cancelled = self
                     .connecting
@@ -266,6 +271,7 @@ impl App {
         let views = self
             .views
             .iter()
+            .filter(|(_, v)| !matches!(v.content, Content::FullValue { .. }))
             .filter(|(_, v)| {
                 v.content.name() == Some(name)
                     || matches!(

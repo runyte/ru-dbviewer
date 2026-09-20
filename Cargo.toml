@@ -21,7 +21,6 @@ futures-util = "0.3"
 sqlparser = "0.59"
 libc = "0.2"
 
-[dev-dependencies]
 tempfile = "3"
 
 [profile.release]

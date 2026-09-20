@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct Postgres {
     client: Client,
+    storage: crate::result_storage::Storage,
     tls: Option<MakeRustlsConnect>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -69,7 +70,11 @@ fn tls_config(ca: &str, cert: &str, key: &str) -> Result<MakeRustlsConnect> {
     Ok(MakeRustlsConnect::new(config))
 }
 impl Postgres {
-    pub async fn open(profile: &Profile, password: String) -> Result<Self> {
+    pub async fn open(
+        profile: &Profile,
+        password: String,
+        storage: crate::result_storage::Storage,
+    ) -> Result<Self> {
         let Profile::Postgres {
             host,
             port,
@@ -136,7 +141,12 @@ impl Postgres {
             )
         };
         client.batch_execute("SET standard_conforming_strings=on; SET idle_in_transaction_session_timeout='5min'").await.map_err(error)?;
-        Ok(Self { client, tls, task })
+        Ok(Self {
+            client,
+            tls,
+            task,
+            storage,
+        })
     }
     pub async fn execute(
         &self,
@@ -157,6 +167,12 @@ impl Postgres {
         seconds: u64,
     ) -> Result<Data> {
         let work = async {
+            let mut capture =
+                self.storage
+                    .result_with_guard(crate::result_storage::WorkGuard::new(
+                        cancel.clone(),
+                        std::time::Instant::now() + Duration::from_secs(seconds),
+                    ));
             self.client
                 .batch_execute(if write { "BEGIN" } else { "BEGIN READ ONLY" })
                 .await
@@ -196,17 +212,26 @@ impl Postgres {
                 pin_mut!(stream);
                 while let Some(row) = stream.next().await {
                     let row = row.map_err(error)?;
-                    let cells = (0..row.len())
-                        .map(|i| {
-                            row.try_get::<_, Option<String>>(i)
-                                .map(Cell::new)
-                                .map_err(error)
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                    let (next, cells) = tokio::task::spawn_blocking(move || {
+                        let cells = (0..row.len())
+                            .map(|i| {
+                                capture.check()?;
+                                row.try_get::<_, Option<&str>>(i)
+                                    .map(|text| Cell::capture(text, &mut capture))
+                                    .map_err(error)
+                            })
+                            .collect::<Result<Vec<_>>>();
+                        (capture, cells)
+                    })
+                    .await
+                    .map_err(|_| "PostgreSQL capture worker stopped")?;
+                    capture = next;
+                    let cells = cells?;
                     if !data.push(cells) {
                         return Ok(data);
                     }
                 }
+                capture.check()?;
                 return Ok(data);
             }
             let stream = self.client.simple_query_raw(&sql).await.map_err(error)?;
@@ -214,9 +239,21 @@ impl Postgres {
             while let Some(item) = stream.next().await {
                 match item.map_err(error)? {
                     SimpleQueryMessage::Row(row) => {
-                        let cells = (0..row.len())
-                            .map(|i| Cell::new(row.get(i).map(str::to_owned)))
-                            .collect();
+                        let (next, cells) = tokio::task::spawn_blocking(move || {
+                            let cells = (0..row.len())
+                                .map(|i| {
+                                    capture.check()?;
+                                    let cell = Cell::capture(row.get(i), &mut capture);
+                                    capture.check()?;
+                                    Ok(cell)
+                                })
+                                .collect::<Result<Vec<_>>>();
+                            (capture, cells)
+                        })
+                        .await
+                        .map_err(|_| "PostgreSQL capture worker stopped")?;
+                        capture = next;
+                        let cells = cells?;
                         if !data.push(cells) {
                             return Ok(data);
                         }
@@ -225,6 +262,7 @@ impl Postgres {
                     _ => {}
                 }
             }
+            capture.check()?;
             Ok(data)
         };
         tokio::pin!(work);

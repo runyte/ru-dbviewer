@@ -20,6 +20,9 @@ pub fn model(
         None
     };
     let formatted = !raw && parsed.is_some();
+    let prefix = (!raw && cell.truncated)
+        .then(|| cell.text.as_deref().and_then(format_json_prefix))
+        .flatten();
     let mut rows = Vec::new();
     if formatted {
         render(parsed.as_ref().unwrap(), "0", "", 0, collapsed, &mut rows);
@@ -39,6 +42,8 @@ pub fn model(
                 "Tree display limit reached; use raw for retained text",
             ));
         }
+    } else if let Some(prefix) = &prefix {
+        rows = prefix.clone();
     } else {
         let text = cell.display();
         let chars = text.chars().collect::<Vec<_>>();
@@ -46,28 +51,96 @@ pub fn model(
             rows.push(json!({"id":i.to_string(),"text":part.iter().collect::<String>(),"role":"ordinary"}));
         }
     }
-    let status = if cell.truncated {
-        "Incomplete retained value: missing content cannot be reconstructed; JSON inspection unavailable"
+    if prefix.is_some() {
+        rows.push(views::row("end", "…"));
+    }
+    let status = if prefix.is_some() {
+        "Preview · indented JSON prefix"
+    } else if cell.truncated {
+        "Preview"
     } else if formatted {
-        "Complete JSON · tree previews · Enter expands/collapses · Tab raw shows full original text"
+        "JSON · Enter expands/collapses"
     } else {
-        "Original retained value · controls escaped · Tab raw toggles complete JSON inspection when available"
+        "Raw value · controls escaped"
     };
     views::text_model(
-        &format!("{name} · value"),
+        &format!("[value] {name}"),
         &format!("{state} · {status}"),
         rows,
-        &[
-            "activate",
-            "raw",
-            "back",
-            "query",
-            "disconnect",
-            "commit",
-            "rollback",
-            "transactions",
-        ],
+        &["activate", "raw", "back"],
     )
+}
+/// Indent a retained prefix without repairing or claiming to parse incomplete JSON.
+/// Strings and scalar spellings stay verbatim; no missing delimiters are invented.
+fn format_json_prefix(text: &str) -> Option<Vec<Value>> {
+    let text = text.trim_start();
+    if !text.starts_with(['{', '[']) {
+        return None;
+    }
+    let mut output = String::new();
+    let mut stack = Vec::new();
+    let mut string = false;
+    let mut escaped = false;
+    let mut newline = false;
+    for c in text.chars() {
+        if !string && c.is_ascii_whitespace() {
+            continue;
+        }
+        if !string && matches!(c, '}' | ']') {
+            let open = stack.pop()?;
+            if (open == '{') != (c == '}') {
+                return None;
+            }
+            newline = true;
+        }
+        if newline {
+            output.push('\n');
+            output.push_str(&"  ".repeat(stack.len()));
+            newline = false;
+        }
+        output.push(c);
+        if string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                string = false;
+            }
+        } else {
+            match c {
+                '"' => string = true,
+                '{' | '[' => {
+                    stack.push(c);
+                    if stack.len() > MAX_DEPTH {
+                        return None;
+                    }
+                    newline = true;
+                }
+                ',' => newline = true,
+                ':' => output.push(' '),
+                _ => {}
+            }
+        }
+        if output.len() > 250_000 {
+            return None;
+        }
+    }
+    let mut rows = Vec::new();
+    let mut bytes = 0;
+    for line in output.split('\n') {
+        // Match raw inspection's chunks without clipping a long retained string.
+        let escaped = crate::results::escape(line).chars().collect::<Vec<_>>();
+        for chunk in escaped.chunks(1024) {
+            let row = json!({"id":rows.len().to_string(),"text":chunk.iter().collect::<String>(),"role":"ordinary"});
+            bytes += row.to_string().len();
+            if rows.len() >= MAX_NODES || bytes > 650_000 {
+                return None;
+            }
+            rows.push(row);
+        }
+    }
+    Some(rows)
 }
 enum Node {
     Scalar {
@@ -210,6 +283,74 @@ fn render(
 mod tests {
     use super::*;
     #[test]
+    fn incomplete_json_indents_without_repairing_strings_or_numbers() {
+        let text =
+            r#"{"x":-0,"x":1.234567890123456789e999,"a":[{"s":"é \",:[]{} \\"},"unfinished\"#;
+        let cell = Cell {
+            text: Some(text.into()),
+            truncated: true,
+            ..Cell::default()
+        };
+        let m = model("x", &cell, false, &BTreeSet::new(), "");
+        assert!(
+            m["status"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("indented JSON prefix")
+        );
+        let lines = m["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            vec![
+                "{",
+                "  \"x\": -0,",
+                "  \"x\": 1.234567890123456789e999,",
+                "  \"a\": [",
+                "    {",
+                r#"      "s": "é \",:[]{} \\""#,
+                "    },",
+                r#"    "unfinished\"#,
+                "…"
+            ]
+        );
+        let raw = model("x", &cell, true, &BTreeSet::new(), "");
+        assert_eq!(raw["rows"][0]["text"], format!("{text} …"));
+    }
+    #[test]
+    fn incomplete_json_keeps_long_strings_and_bounds_expansion() {
+        let cell = Cell::new(Some(format!(r#"{{"s":"{}"}}"#, "é".repeat(40_000))));
+        assert!(cell.truncated);
+        let m = model("x", &cell, false, &BTreeSet::new(), "");
+        let shown = m["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<String>();
+        assert_eq!(
+            shown,
+            cell.text
+                .unwrap()
+                .replace(':', ": ")
+                .replacen('{', "{  ", 1)
+                + "…"
+        );
+        assert!(m.to_string().len() < 700_000);
+        for text in [
+            "[".repeat(65),
+            format!("[{}", "0,".repeat(5000)),
+            "{]".into(),
+            "plain text".into(),
+        ] {
+            assert!(format_json_prefix(&text).is_none());
+        }
+    }
+    #[test]
     fn precision_collapsing_raw_and_incomplete() {
         let cell = Cell::new(Some(
             "{\"n\":123456789012345678901234567890,\"a\":[1,2]}".into(),
@@ -228,7 +369,7 @@ mod tests {
             super::model("x", &cell, true, &collapsed, "")["status"]["text"]
                 .as_str()
                 .unwrap()
-                .contains("Original")
+                .contains("Raw value")
         );
         let mut cell = cell;
         cell.truncated = true;
@@ -236,7 +377,7 @@ mod tests {
             super::model("x", &cell, false, &collapsed, "")["status"]["text"]
                 .as_str()
                 .unwrap()
-                .contains("Incomplete")
+                .contains("Preview")
         );
     }
     #[test]
@@ -249,7 +390,7 @@ mod tests {
                 model("x", &Cell::new(Some(text)), false, &BTreeSet::new(), "")["status"]["text"]
                     .as_str()
                     .unwrap()
-                    .contains("Original")
+                    .contains("Raw value")
             );
         }
     }

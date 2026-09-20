@@ -107,7 +107,7 @@ class NativeEditor:
         self.database = self.root / "tasks.sqlite3"
         config = configuration()
         config.update(lsp={"enable": False})
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             db.executescript("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO items VALUES(1, 'native-first'),(2, 'native-second');")
         self.config = self.root / "config" / "runyte" / "config.json"
         self.config.parent.mkdir(parents=True)
@@ -118,7 +118,7 @@ class NativeEditor:
         # shared host inventory, or internal test-control environment values.
         self.environment = {key: value for key, value in os.environ.items() if not key.startswith("RUNYTE_")}
         self.environment.update(TERM="xterm-256color", HOME=str(self.root / "home"),
-                                RUNYTE_ALL_HOSTS_DIR=str(self.root / "all-hosts"))
+                                RUNYTE_ALL_HOSTS_DIR=str(self.root / "all-hosts"), TMPDIR=str(self.root))
         for variable, name in [("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache"),
                                ("XDG_CONFIG_HOME", "config"), ("XDG_RUNTIME_DIR", "runtime"),
                                ("XDG_STATE_HOME", "state")]:
@@ -182,13 +182,35 @@ class NativeEditor:
         os.write(self.master, keys)
         self.drain()
 
-    def wait_for(self, predicate):
-        deadline = time.monotonic() + 8
+    def wait_for(self, predicate, timeout=8):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if predicate():
                 return
             self.drain(0.1)
         self.test.fail(self.screen.text() if self.screen is not None else self.output[-8000:].decode(errors="replace"))
+
+    def host_metrics(self):
+        # Linux-only observations of this fixture's host, never a shared host.
+        pid = self.child.pid
+        if self.persistent:
+            for endpoint in self.root.rglob("endpoint.json"):
+                try:
+                    pid = int(json.loads(endpoint.read_text())["pid"])
+                    break
+                except (FileNotFoundError, KeyError):
+                    continue
+        try:
+            values = {}
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    key, value = line.split(":", 1)
+                    values[key] = int(value.split()[0])
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            values["cpu_ms"] = (int(stat[11]) + int(stat[12])) * 1000 / os.sysconf("SC_CLK_TCK")
+            return values
+        except (FileNotFoundError, PermissionError):
+            return {}
 
     def query(self, sql):
         if not self.database.exists():
@@ -206,6 +228,21 @@ class NativeEditor:
         self.send(("::"+command).encode())
         self.wait_for(lambda: self.sees(b"plugin.dbviewer."))
         self.send(b"\r")
+
+    def find(self, text):
+        # Search literal text in the active document; metadata rows are deliberately
+        # not actionable and must not be navigated through fixed line counts.
+        self.send(b"gg;s" + text.encode() + b"\r")
+
+    def open_row(self, text, marker):
+        self.find(text)
+        self.send(b"\r")
+        self.wait_for(lambda: self.shows(marker))
+
+    def action(self, name):
+        self.send(b"\t")
+        self.wait_for(lambda: self.shows("Application actions"))
+        self.send(name.encode() + b"\r")
 
     def present(self, keys, marker):
         # The host refuses to show a plugin's view, prompt or document once
@@ -307,14 +344,12 @@ class NativeTests(unittest.TestCase):
     def test_sqlite_browse_query_and_stop(self):
         with NativeEditor(self) as editor:
             self.connect(editor)
-            editor.send(b"ggj\r")
-            editor.wait_for(lambda: editor.shows("native-first"))
-            editor.send(b"ggjj\r")
-            editor.wait_for(lambda: editor.shows("name [TEXT]: native-first"))
+            editor.open_row("main.items", "native-first")
+            editor.open_row("native-first", "name [TEXT]: native-first")
             editor.command("db-query")
             editor.wait_for(lambda: editor.shows("SELECT 1;"))
             editor.command("db-run")
-            editor.wait_for(lambda: editor.shows("rows retained") and editor.shows("READ ONLY"))
+            editor.wait_for(lambda: editor.shows("[results]") and editor.shows("READ ONLY"))
             editor.send(b":plugin-stop dbviewer\r")
             editor.wait_for(lambda: editor.shows("unavailable") or editor.shows("stopped"))
 
@@ -335,14 +370,36 @@ class NativeTests(unittest.TestCase):
             editor.send(b"\r")
             editor.command("db-run")
             editor.wait_for(lambda: editor.shows("captured SQL"))
-            editor.send(b"ggj\r")
-            editor.wait_for(lambda: editor.shows("Execute reviewed SQL"))
+            editor.open_row("INSERT INTO items", "Execute reviewed SQL")
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("PENDING COMMIT"))
             self.assertEqual(editor.query("SELECT COUNT(*) FROM items")[0][0], 2)
             editor.command("db-commit")
             editor.wait_for(lambda: editor.shows("ready") and not editor.shows("PENDING COMMIT"))
             self.assertEqual(editor.query("SELECT name FROM items WHERE id=3"), [("native-write",)])
+
+    def test_truncated_json_value_and_back(self):
+        with NativeEditor(self) as editor:
+            payload = json.dumps({"assignment": {"members": [
+                {"id": i, "name": "member" * 50} for i in range(300)
+            ]}}, separators=(",", ":"))
+            with closing(sqlite3.connect(editor.database)) as db:
+                db.execute("UPDATE items SET name=? WHERE id=1", (payload,))
+                db.commit()
+            self.connect(editor)
+            editor.open_row("main.items", "[rows]")
+            editor.open_row('{"assignment"', "name [TEXT]")
+            editor.open_row("name [TEXT]", "indented JSON prefix")
+            self.assertTrue(editor.shows('"assignment": {'))
+            self.assertTrue(editor.shows('"members": ['))
+            editor.send(b"\t")
+            editor.wait_for(lambda: editor.shows("Application actions"))
+            editor.send(b"raw\r")
+            editor.wait_for(lambda: editor.shows('{"assignment":{"members":['))
+            editor.send(b"-")
+            editor.wait_for(lambda: editor.shows("name [TEXT]"))
+            editor.send(b"-")
+            editor.wait_for(lambda: editor.shows("[rows]") and not editor.shows("name [TEXT]"))
 
     def test_native_completion_back_and_unsaved_sql(self):
         with NativeEditor(self) as editor:
@@ -354,14 +411,12 @@ class NativeTests(unittest.TestCase):
             editor.wait_for(lambda: editor.shows("Resolved paths"))
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
-            editor.send(b"ggj\r")
-            editor.wait_for(lambda: editor.shows("native-first"))
-            editor.send(b"ggjj\r")
-            editor.wait_for(lambda: editor.shows("name [TEXT]: native-first"))
+            editor.open_row("main.items", "native-first")
+            editor.open_row("native-first", "name [TEXT]: native-first")
             editor.send(b"-")
-            editor.wait_for(lambda: editor.shows("page 1") and not editor.shows("name [TEXT]"))
+            editor.wait_for(lambda: editor.shows("[rows]") and not editor.shows("name [TEXT]"))
             editor.send(b"\t")
-            editor.wait_for(lambda: editor.shows("back"))
+            editor.wait_for(lambda: editor.shows("Back") or editor.shows("back"))
             editor.send(b"back\r")
             editor.wait_for(lambda: editor.shows("main.items"))
             editor.command("db-query")
@@ -370,7 +425,7 @@ class NativeTests(unittest.TestCase):
             editor.send(b"%cSELECT 42 AS unsaved_value;\x1b")
             editor.wait_for(lambda: editor.shows("SELECT 42 AS unsaved_value"))
             editor.command("db-run")
-            editor.wait_for(lambda: editor.shows("unsaved_value") and editor.shows("42") and editor.shows("rows retained"))
+            editor.wait_for(lambda: editor.shows("unsaved_value") and editor.shows("42") and editor.shows("[results]"))
             self.assertFalse(list(editor.project.glob("*.sql")))
             editor.send(b"\x1bo")
             editor.wait_for(lambda: editor.shows("SELECT 42 AS unsaved_value"))
@@ -384,16 +439,17 @@ class NativeTests(unittest.TestCase):
         with NativeEditor(self) as editor:
             self.connect(editor)
             editor.command("db")
-            editor.wait_for(lambda: editor.shows("Databases"))
-            editor.send(b"ggj\t")
+            editor.wait_for(lambda: editor.shows("[databases]"))
+            editor.find("native ·")
+            editor.send(b"\t")
             editor.wait_for(lambda: editor.shows("Application actions"))
             legacy = editor.shows("profile-actions")
             if os.environ.get("DBVIEWER_EXPECT_ROW_ACTIONS") == "1":
                 self.assertFalse(legacy, editor.screen.text())
             if legacy:
                 editor.send(b"profile-actions\r")
-                editor.wait_for(lambda: editor.shows("disconnect"))
-            self.assertTrue(re.search(r"\bdisconnect\b", editor.screen.text()))
+                editor.wait_for(lambda: editor.shows("Disconnect") or editor.shows("disconnect"))
+            self.assertTrue(re.search(r"\bdisconnect\b", editor.screen.text(), re.IGNORECASE))
             editor.send(b"disconnect\r")
             editor.wait_for(lambda: editor.shows("disconnected"))
             editor.send(b"\t")
@@ -401,16 +457,131 @@ class NativeTests(unittest.TestCase):
             if legacy:
                 editor.send(b"profile-actions\r")
                 editor.wait_for(lambda: not editor.shows("Application actions"))
-            self.assertFalse(re.search(r"\bdisconnect\b", editor.screen.text()), editor.screen.text())
+            self.assertFalse(re.search(r"\bdisconnect\b", editor.screen.text(), re.IGNORECASE), editor.screen.text())
             # Pick the exact action: the existing fuzzy menu can also match
             # connect-new, so typing its shared prefix is not a unique choice.
             for _ in range(8):
-                if re.search(r"▸ connect\s", editor.screen.text()):
+                if re.search(r"▸ [Cc]onnect\s", editor.screen.text()):
                     break
                 editor.send(b"\x1b[B")
-            self.assertRegex(editor.screen.text(), r"▸ connect\s")
+            self.assertRegex(editor.screen.text(), r"▸ [Cc]onnect\s")
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
+
+    def large_value(self, editor):
+        value = {"members": [{"id": i, "name": "member" * 65} for i in range(12000)],
+                 "tail": "NATIVE_FULL_TAIL_573"}
+        raw = json.dumps(value, separators=(",", ":"))
+        self.assertGreater(len(raw.encode()), 4 * 1024 * 1024)
+        with closing(sqlite3.connect(editor.database)) as db:
+            db.execute("UPDATE items SET name=? WHERE id=1", (raw,))
+            db.commit()
+        self.connect(editor)
+        editor.open_row("main.items", "[rows]")
+        editor.open_row('{"members"', "name [TEXT]")
+        editor.open_row("name [TEXT]", "[value]")
+        self.assertFalse(editor.shows("NATIVE_FULL_TAIL_573"))
+        return value, raw
+
+    @unittest.skipUnless(os.environ.get("DBVIEWER_EXPECT_FULL_VALUES") == "1",
+                         "requires current host view-document and job-feedback features")
+    def test_full_value_search_copy_raw_back_and_persistent_reattach(self):
+        with NativeEditor(self, persistent=True) as editor:
+            value, raw = self.large_value(editor)
+            editor.send(b"\t")
+            editor.wait_for(lambda: editor.shows("Application actions"))
+            self.assertTrue(editor.shows("Inspect"), editor.screen.text())
+            self.assertTrue(editor.shows("Show full value"), editor.screen.text())
+            self.assertNotRegex(editor.screen.text(), r"\bActivate\b")
+            before = editor.host_metrics()
+            started = time.monotonic()
+            editor.send(b"show-full\r")
+            editor.wait_for(lambda: editor.shows("Loading full value") or editor.shows("Complete ·"), timeout=30)
+            input_during_load = editor.shows("Loading full value")
+            input_started = time.monotonic()
+            os.write(editor.master, b":")
+            editor.wait_for(lambda: editor.shows(" CMD "))
+            input_seconds = time.monotonic() - input_started
+            editor.send(b"\x1b")
+            editor.wait_for(lambda: editor.shows("Complete ·") and editor.shows('"members": ['), timeout=60)
+            load_seconds = time.monotonic() - started
+            loaded = editor.host_metrics()
+            editor.find("NATIVE_FULL_TAIL_573")
+            editor.wait_for(lambda: editor.shows('"tail": "NATIVE_FULL_TAIL_573"'))
+            # Native search reaches past the old 4 MiB/10,000-row limits. Ordinary
+            # whole-buffer yank and paste exercise every internal transport chunk.
+            editor.send(b"%y")
+            copied = editor.project / "copied-value.txt"
+            copied.write_text("")
+            editor.send(b":open copied-value.txt\r")
+            editor.wait_for(lambda: editor.shows("copied-value.txt"))
+            editor.send(b"p:w\r")
+            editor.wait_for(lambda: copied.stat().st_size > 4 * 1024 * 1024, timeout=30)
+            text = copied.read_text()
+            body = text[text.index("{"):]
+            formatted_lines = body.count("\n") + 1
+            self.assertGreater(formatted_lines, 10000)
+            self.assertEqual(json.loads(body), value)
+            editor.send(b"\x1bo")
+            editor.wait_for(lambda: editor.shows("[value]"))
+            editor.send(b"gg")
+            editor.action("raw")
+            editor.wait_for(lambda: editor.shows("Complete ·") and editor.shows('{"members":['), timeout=60)
+            editor.find("NATIVE_FULL_TAIL_573")
+            editor.wait_for(lambda: editor.shows("NATIVE_FULL_TAIL_573"))
+            editor.detach()
+            editor.attach()
+            editor.wait_for(lambda: editor.shows("NATIVE_FULL_TAIL_573"), timeout=30)
+            # Copy raw mode too: no SQL replay or pretty-print spelling can replace it.
+            editor.send(b"%y")
+            raw_copy = editor.project / "copied-raw.txt"
+            raw_copy.write_text("")
+            editor.send(b":open copied-raw.txt\r")
+            editor.wait_for(lambda: editor.shows("copied-raw.txt"))
+            editor.send(b"p:w\r")
+            editor.wait_for(lambda: raw_copy.stat().st_size > 4 * 1024 * 1024, timeout=30)
+            copied_text = raw_copy.read_text()
+            self.assertEqual(copied_text[copied_text.index('{"members":'):], raw)
+            editor.send(b"\x1bo")
+            editor.wait_for(lambda: editor.shows("[value]"))
+            editor.send(b"gg;")
+            editor.drain(2)
+            idle_before = editor.host_metrics()
+            editor.drain(1)
+            idle_after = editor.host_metrics()
+            idle_cpu_ms = (idle_after["cpu_ms"] - idle_before["cpu_ms"]
+                           if "cpu_ms" in idle_before and "cpu_ms" in idle_after else None)
+            print(f"Native debug full-value observation: raw={len(raw.encode())} bytes, "
+                  f"formatted={len(body.encode())} bytes/{formatted_lines} lines, "
+                  f"observed_harness_load={load_seconds:.3f}s, "
+                  f"observed_harness_command_prompt={input_seconds:.3f}s "
+                  f"(during_load={input_during_load}; send drain0.3s, wait polling0.1s), "
+                  f"host_only_before={before}, host_only_loaded={loaded}, "
+                  f"host_only_after_copy={idle_after} (VmRSS/VmHWM in KiB), "
+                  f"settled_full_document_host_cpu_ms_per_second={idle_cpu_ms}", flush=True)
+            editor.send(b"-")
+            editor.wait_for(lambda: editor.shows("[record]") and editor.shows("name [TEXT]"))
+            # The field selection is restored: Enter immediately reopens its preview.
+            editor.send(b"\r")
+            editor.wait_for(lambda: editor.shows("[value]") and editor.shows("Preview"))
+            editor.action("back")
+            editor.wait_for(lambda: editor.shows("[record]") and editor.shows("name [TEXT]"))
+            editor.send(b"-")
+            editor.wait_for(lambda: editor.shows("[rows]") and not editor.shows("name [TEXT]"))
+
+    @unittest.skipUnless(os.environ.get("DBVIEWER_EXPECT_FULL_VALUES") == "1",
+                         "requires current host view-document and job-feedback features")
+    def test_full_value_cancel_keeps_editor_responsive(self):
+        with NativeEditor(self) as editor:
+            self.large_value(editor)
+            editor.action("show-full")
+            editor.command("db-cancel")
+            # A commit already installed is the successful atomic winner. Otherwise
+            # cancellation restores a readable preview; neither path abandons the UI.
+            editor.wait_for(lambda: editor.shows("cancelled") or editor.shows("Complete ·"), timeout=30)
+            editor.send(b"gg")
+            editor.action("back")
+            editor.wait_for(lambda: editor.shows("[record]") and editor.shows("name [TEXT]"))
 
     def test_persistent_detach_and_reattach(self):
         with NativeEditor(self, persistent=True) as editor:
@@ -418,8 +589,7 @@ class NativeTests(unittest.TestCase):
             editor.detach()
             editor.attach()
             editor.wait_for(lambda: editor.shows("main.items"))
-            editor.send(b"ggj\r")
-            editor.wait_for(lambda: editor.shows("native-first"))
+            editor.open_row("main.items", "native-first")
 
 if __name__ == "__main__":
     if not os.environ.get("RUNYTE_BIN"):

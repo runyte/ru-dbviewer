@@ -116,6 +116,7 @@ impl App {
                     if let Some(view) = ctx["view"].as_str() {
                         self.sources.insert(buffer.clone(), view.into());
                     }
+                    self.query_labels.insert(buffer.clone(), path);
                     self.buffers.insert(buffer, (name, generation));
                     return Ok(());
                 }
@@ -374,17 +375,24 @@ impl App {
                     db.browse_with(&table, page, &browse, cancel).await
                 };
                 result.map(|d| {
+                    let source = if schema {
+                        format!(
+                            "schema:{}",
+                            if matches!(db.as_ref(), Database::Postgres(_)) {
+                                format!("{}.{}", table.schema, table.name)
+                            } else {
+                                table.name.clone()
+                            }
+                        )
+                    } else {
+                        "browse".into()
+                    };
                     Work::Data(
                         name.clone(),
                         d,
                         if schema { None } else { Some(table) },
                         if schema { 0 } else { page },
-                        if schema {
-                            "schema"
-                        } else {
-                            "browse: offset pages; external writes can change ordering"
-                        }
-                        .into(),
+                        source,
                     )
                 })
             } else {

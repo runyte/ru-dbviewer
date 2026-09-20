@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 mod browsing;
 mod commands;
+mod full_value;
 mod input;
 mod lifecycle;
+mod presentation;
 mod work;
 use crate::{
     CAPABILITIES, HOST_RANGE, Result,
@@ -225,6 +227,7 @@ struct PathCompletion {
     epoch: u64,
 }
 enum Work {
+    Full(full_value::Finished),
     Path(PathCompletion),
     Connect(Profile, bool, Result<Database>),
     Catalog(String, Vec<Table>, bool),
@@ -245,6 +248,7 @@ pub struct App {
     views: HashMap<String, View>,
     buffers: HashMap<String, (String, u64)>,
     sources: HashMap<String, String>,
+    query_labels: HashMap<String, String>,
     query_serial: u64,
     generation: u64,
     input: HashMap<String, Input>,
@@ -258,6 +262,11 @@ pub struct App {
     receiver: mpsc::Receiver<Completion>,
     seconds: u64,
     row_actions: bool,
+    action_presentation: bool,
+    view_metadata: bool,
+    document_views: bool,
+    full_slots: Arc<tokio::sync::Semaphore>,
+    full_jobs: HashMap<String, (String, CancellationToken)>,
 }
 fn string(v: &Value, key: &str) -> Result<String> {
     v[key]
@@ -278,7 +287,24 @@ impl App {
         if hello["type"] != "hello" || hello["version"] != "runyte-1" || !supported(version) {
             return Err("Runyte >=0.3.0, <0.4.0 is required".into());
         }
-        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands(),"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":["view-row-actions"]}))?;
+        let supported = hello["features"]
+            .as_array()
+            .ok_or("Invalid host features")?;
+        let known = [
+            "view-row-actions",
+            "view-action-presentation",
+            "view-metadata",
+            "view-document",
+            "job-feedback",
+        ];
+        let requested = known
+            .iter()
+            .filter(|name| supported.iter().any(|value| value == **name))
+            .copied()
+            .collect::<Vec<_>>();
+        let presentation = requested.contains(&"view-action-presentation");
+        let document = requested.contains(&"view-document") && requested.contains(&"job-feedback");
+        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":presentation::commands(presentation, document),"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":requested}))?;
         let registered = tokio::time::timeout(Duration::from_secs(8), input.recv())
             .await
             .map_err(|_| "Registration timed out")?
@@ -293,20 +319,22 @@ impl App {
         {
             return Err("Plugin registration refused".into());
         }
-        let supported = hello["features"]
-            .as_array()
-            .ok_or("Invalid host features")?;
         let features = registered["features"]
             .as_array()
             .ok_or("Invalid negotiated features")?;
-        if features.len() > 1
-            || features
-                .iter()
-                .any(|f| f != "view-row-actions" || !supported.contains(f))
+        if features.len() > known.len()
+            || features.iter().enumerate().any(|(i, f)| {
+                !f.as_str().is_some_and(|f| requested.contains(&f)) || features[..i].contains(f)
+            })
+            || (presentation && !features.iter().any(|f| f == "view-action-presentation"))
         {
             return Err("Invalid negotiated features".into());
         }
         let row_actions = features.iter().any(|f| f == "view-row-actions");
+        let action_presentation = features.iter().any(|f| f == "view-action-presentation");
+        let view_metadata = features.iter().any(|f| f == "view-metadata");
+        let document_views = features.iter().any(|f| f == "view-document")
+            && features.iter().any(|f| f == "job-feedback");
         let saved = rpc.request("state.get", json!({})).await?;
         let document = &saved["document"];
         let state: Saved = if document.is_null() {
@@ -333,6 +361,7 @@ impl App {
             views: HashMap::new(),
             buffers: HashMap::new(),
             sources: HashMap::new(),
+            query_labels: HashMap::new(),
             query_serial: 0,
             generation: 0,
             input: HashMap::new(),
@@ -346,6 +375,11 @@ impl App {
             receiver: rx,
             seconds,
             row_actions,
+            action_presentation,
+            view_metadata,
+            document_views,
+            full_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            full_jobs: HashMap::new(),
         };
         loop {
             if rpc.closed() {
@@ -362,7 +396,7 @@ impl App {
             tokio::select! {
              message=input.recv()=>{
               let Some(message)=message else{break;};
-              if message["type"]=="event" {if message["event"]=="view.closed" {app.views.remove(message["data"]["view"].as_str().unwrap_or(""));}else if message["event"]=="activity.cancel_requested" {app.cancel_lease(message["data"]["lease"].as_str().unwrap_or("")).await?;}continue;}
+              if message["type"]=="event" {if message["event"]=="view.closed" {let id=message["data"]["view"].as_str().unwrap_or("");app.views.remove(id);if let Some((_,cancel))=app.full_jobs.get(id){cancel.cancel();}}else if message["event"]=="activity.cancel_requested" {app.cancel_lease(message["data"]["lease"].as_str().unwrap_or("")).await?;}continue;}
               if message["type"]!="request"{continue;}
               if message["method"]=="ui.validate" { app.validate_form(&message); continue; }
               let id=string(&message,"id")?;let mut ctx=message["params"].clone();ctx["invocation"]=json!(id);
@@ -376,6 +410,9 @@ impl App {
              done=app.receiver.recv()=>{if let Some(done)=done {app.complete(done).await?;}}
              _=tokio::time::sleep_until(deadline),if expiry.is_some()=>{app.expire().await?;}
             }
+        }
+        for (_, cancel) in app.full_jobs.values() {
+            cancel.cancel();
         }
         for c in app.connections.values() {
             c.cancel.cancel();
@@ -432,7 +469,7 @@ impl App {
         }
         choices
     }
-    fn model(&self, content: &Content) -> Value {
+    fn base_model(&self, content: &Content) -> Value {
         let mut model = match content {
             Content::Connections => views::text_model(
                 "Databases",
@@ -530,12 +567,6 @@ impl App {
             ),
             _ => content.model(&self.state(content.name().unwrap_or(""))),
         };
-        if let Content::Catalog { name, .. } = content
-            && let Some(Profile::Sqlite { path, .. }) =
-                self.saved.profiles.iter().find(|p| p.name() == name)
-        {
-            model["detail"] = json!({"text":views::short(&format!("Resolved database: {}",crate::results::escape(path)),2000),"role":"muted"});
-        }
         let name = content.name();
         let live = name.and_then(|n| self.connections.get(n));
         if let Some(actions) = model["actions"].as_array_mut() {
@@ -562,25 +593,11 @@ impl App {
         model
     }
     fn model_for_view(&self, id: &str, content: &Content) -> Value {
-        let mut model = self.model(content);
-        if let Content::Result {
-            data,
-            table: Some(_),
-            page,
-            record: None,
-            ..
-        } = content
-        {
-            let browse = &self.views[id].browse;
-            let n = model["rows"].as_array().map_or(0, Vec::len);
-            let size = browse.size();
-            let range = if n == 0 {
-                "0–0".into()
-            } else {
-                format!("{}–{}", page * size + 1, page * size + n)
-            };
-            model["detail"] = json!({"text":views::short(&crate::results::escape(&browse.summary()),2000),"role":"muted"});
-            model["status"] = json!({"text":views::short(&format!("{} · rows {range} · page size {size} · database page; external writes can shift offset pages{}",self.state(content.name().unwrap_or("")),if data.cells_truncated{" · RETAINED VALUES TRUNCATED"}else{" · cell previews may be clipped"}),1000),"role":"muted"});
+        let view = &self.views[id];
+        let parent = view.parent.as_ref().and_then(|id| self.views.get(id));
+        let mut model = self.model_context(content, parent, Some(&view.browse));
+        if matches!(content, Content::Value { .. }) && parent.is_none() {
+            model["title"] = view.model["title"].clone();
         }
         if let Some(name) = content.name()
             && let Some(generation) = self.views[id].generation
@@ -593,7 +610,7 @@ impl App {
             model["actions"]
                 .as_array_mut()
                 .unwrap()
-                .retain(|a| matches!(a.as_str(), Some("back" | "activate" | "raw")));
+                .retain(|a| matches!(a.as_str(), Some("back" | "activate" | "raw" | "show-full")));
         }
         model
     }
@@ -601,9 +618,24 @@ impl App {
         if self.views.len() >= 12 {
             return Err("Close a database view before opening another".into());
         }
+        let parent = ctx["view"].as_str().and_then(|id| self.views.get(id));
+        let model = self.model_context(&content, parent, parent.map(|v| &v.browse));
+        let inherited_browse = if matches!(
+            content,
+            Content::Result {
+                record: Some(_),
+                ..
+            } | Content::Value { .. }
+                | Content::FullValue { .. }
+                | Content::Filters { .. }
+        ) {
+            parent.map(|v| v.browse.clone()).unwrap_or_default()
+        } else {
+            Default::default()
+        };
         let result = self
             .rpc
-            .request("view.create", json!({"model":self.model(&content)}))
+            .request("view.create", json!({"model":model}))
             .await?;
         let id = string(&result, "view")?;
         let connected_content = content.name().is_some();
@@ -612,10 +644,10 @@ impl App {
             View {
                 published: tokio::time::Instant::now(),
                 revision: string(&result, "revision")?,
-                model: self.model(&content),
+                model,
                 content,
                 parent: ctx["view"].as_str().map(str::to_owned),
-                browse: crate::browse::Browse::default(),
+                browse: inherited_browse,
                 generation: connected_content
                     .then(|| {
                         ctx["view"]
@@ -637,12 +669,18 @@ impl App {
                     .flatten(),
             },
         );
-        self.rpc
+        if let Err(error) = self
+            .rpc
             .request(
                 "pane.show",
                 json!({"invocation":ctx["invocation"],"view":id}),
             )
-            .await?;
+            .await
+        {
+            self.views.remove(&id);
+            let _ = self.rpc.request("view.close", json!({"view":id})).await;
+            return Err(error);
+        }
         Ok(id)
     }
     async fn publish(&mut self, id: &str, content: Content) -> Result<()> {
