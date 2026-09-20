@@ -685,6 +685,26 @@ async fn browse_filter_contract(db: &Database, schema: &str) {
             .as_deref(),
         Some("10")
     );
+    db.execute("WITH RECURSIVE n(i) AS (SELECT 21 UNION ALL SELECT i+1 FROM n WHERE i<1021) INSERT INTO browse_contract SELECT i, 'page fixture', i FROM n".into(), true, token(), 5).await.unwrap();
+    db.settle(true).await.unwrap();
+    browse.filters.clear();
+    browse.sort = None;
+    browse.page_size = 1000;
+    let first = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+    assert_eq!(first.rows.len(), 1000);
+    assert!(!first.truncated);
+    assert_eq!(first.rows[999][0].text.as_deref(), Some("1016"));
+    let last = db.browse_with(&table, 1, &browse, token()).await.unwrap();
+    assert_eq!(last.rows.len(), 5);
+    assert_eq!(last.rows[0][0].text.as_deref(), Some("1017"));
+    assert_eq!(last.rows[4][0].text.as_deref(), Some("1021"));
+    assert!(
+        db.browse_with(&table, 2, &browse, token())
+            .await
+            .unwrap()
+            .rows
+            .is_empty()
+    );
     db.execute("DROP TABLE browse_contract".into(), true, token(), 5)
         .await
         .unwrap();

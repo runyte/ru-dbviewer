@@ -113,7 +113,7 @@ impl Content {
             | Self::Result { name, .. } => Some(name),
         }
     }
-    pub fn model(&self, state: &str) -> Value {
+    pub fn model(&self, state: &str, page_size: usize) -> Value {
         match self {
             Self::FullValue { name, document, .. } => document.as_ref().map_or_else(
                 || {
@@ -199,11 +199,20 @@ impl Content {
                         ""
                     }
                 );
-                let count = data.rows.len().saturating_sub(*offset).min(100);
-                let first = if count == 0 { 0 } else { page * 100 + 1 };
-                let last = if count == 0 { 0 } else { page * 100 + count };
+                let page_size = if table.is_some() {
+                    page_size
+                } else {
+                    crate::browse::DEFAULT_PAGE_SIZE
+                };
+                let count = data.rows.len().saturating_sub(*offset).min(page_size);
+                let first = if count == 0 { 0 } else { page * page_size + 1 };
+                let last = if count == 0 {
+                    0
+                } else {
+                    page * page_size + count
+                };
                 let status = format!(
-                    "{status} · rows {first}–{last} · page size 100 · {}",
+                    "{status} · rows {first}–{last} · page size {page_size} · {}",
                     if table.is_some() {
                         "database page"
                     } else {
@@ -290,14 +299,20 @@ impl Content {
                 if !columns.is_empty() {
                     model["columns"]=json!(columns.iter().map(|&i|json!({"id":format!("c{i}"),"label":column_label(&data.columns[i].name)})).collect::<Vec<_>>());
                     let mut rows = Vec::new();
-                    let mut bytes = 4096;
-                    for (index, r) in data.rows.iter().enumerate().skip(*offset).take(100) {
-                        let value = json!({"id":index.to_string(),"text":"","role":"ordinary","cells":columns.iter().map(|&i|json!({"text":short(&r[i].display(),512),"role":if r[i].text.is_none(){"muted"}else{"ordinary"}})).collect::<Vec<_>>()});
-                        bytes += value.to_string().len();
-                        if bytes > 700_000 {
-                            break;
+                    // Budget every row before publication: dropping the tail of a
+                    // database page would skip those records on Next page. Shorten
+                    // cell previews instead; record inspection retains their values.
+                    let budget = 690_000 / count.max(1);
+                    for (index, r) in data.rows.iter().enumerate().skip(*offset).take(page_size) {
+                        let mut preview = 512;
+                        loop {
+                            let value = json!({"id":index.to_string(),"text":"","role":"ordinary","cells":columns.iter().map(|&i|json!({"text":short(&r[i].display(),preview),"role":if r[i].text.is_none(){"muted"}else{"ordinary"}})).collect::<Vec<_>>()});
+                            if value.to_string().len() <= budget || preview <= 4 {
+                                rows.push(value);
+                                break;
+                            }
+                            preview = (preview / 2).max(4);
                         }
-                        rows.push(value);
                     }
                     model["rows"] = json!(rows);
                 }

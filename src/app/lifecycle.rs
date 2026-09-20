@@ -237,7 +237,7 @@ impl App {
             && let Some(view) = self.views.get(&done.view)
         {
             tokio::time::sleep_until(view.published + Duration::from_millis(110)).await;
-            let mut model = self.model(&view.content);
+            let mut model = self.model_for_view(&done.view, &view.content);
             model["status"] = json!({"text":views::short(&error,1000),"role":"error"});
             let result = self
                 .rpc

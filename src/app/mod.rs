@@ -469,7 +469,7 @@ impl App {
         }
         choices
     }
-    fn base_model(&self, content: &Content) -> Value {
+    fn base_model(&self, content: &Content, page_size: usize) -> Value {
         let mut model = match content {
             Content::Connections => views::text_model(
                 "Databases",
@@ -565,7 +565,7 @@ impl App {
                     .collect(),
                 &["commit", "rollback", "disconnect", "refresh", "back"],
             ),
-            _ => content.model(&self.state(content.name().unwrap_or(""))),
+            _ => content.model(&self.state(content.name().unwrap_or("")), page_size),
         };
         let name = content.name();
         let live = name.and_then(|n| self.connections.get(n));

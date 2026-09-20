@@ -256,7 +256,7 @@ impl App {
             "page-size" => {
                 self.form(
                     ctx,
-                    "Browse page size (1–100)",
+                    "Browse page size (1–1000)",
                     vec![field("size", "Rows per page", "text", true)],
                     Input::PageSize(id),
                 )
@@ -566,9 +566,9 @@ impl App {
                     .as_str()
                     .unwrap_or("")
                     .parse::<usize>()
-                    .map_err(|_| "Use a page size from 1 to 100")?;
-                if !(1..=100).contains(&size) {
-                    return Err("Use a page size from 1 to 100".into());
+                    .map_err(|_| "Use a page size from 1 to 1000")?;
+                if !(1..=crate::browse::MAX_PAGE_SIZE).contains(&size) {
+                    return Err("Use a page size from 1 to 1000".into());
                 }
                 self.views
                     .get_mut(&id)

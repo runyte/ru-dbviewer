@@ -191,8 +191,9 @@ Rollback cannot undo external function effects or PostgreSQL sequence advances.
 
 ## Results and limits
 
-Browse pages default to 100 rows; **Page size** accepts 1–100. Top metadata shows the
-visible range and page size, including empty pages, without claiming a total.
+Browse pages default to 100 rows; **Tab → Page size** accepts 1–1,000. Use
+**Tab → Next page** or **Previous page** to move between pages. Top metadata shows
+the visible range and page size, including empty pages, without claiming a total.
 Database paging issues a bounded query; SQL-result paging reads retained data.
 **Sort rows** chooses a column and direction; primary keys break ties where available.
 Without suitable keys, ordering can be unstable. External writes can shift offset
@@ -243,7 +244,9 @@ Command identifiers and aliases remain unchanged: spaces belong in visible label
 so `connect-new` remains the binding identifier for **Add database**.
 
 Native tables show up to eight selected columns, clipped by Runyte to 32 terminal
-cells each. **Choose columns** is a searchable checklist: toggle named entries and choose
+cells each. Large pages shorten cell previews as needed to keep every retained
+row accessible within the publication budget; Enter still opens record inspection.
+**Choose columns** is a searchable checklist: toggle named entries and choose
 **Apply selections**. **Find column…** searches all names; paged choices keep wide
 results bounded. Selections survive searches. Duplicate column labels remain distinct. Enter opens record
 and value inspection. Wide records shorten field previews to fit the view budget;

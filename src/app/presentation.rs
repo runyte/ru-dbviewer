@@ -83,7 +83,13 @@ impl App {
         parent: Option<&View>,
         browse: Option<&crate::browse::Browse>,
     ) -> Value {
-        let mut model = self.base_model(content);
+        let mut model = self.base_model(
+            content,
+            browse.map_or(
+                crate::browse::DEFAULT_PAGE_SIZE,
+                crate::browse::Browse::size,
+            ),
+        );
         model.as_object_mut().unwrap().remove("detail");
         let name = content.name().unwrap_or("");
         let mut entries = Vec::new();
@@ -143,7 +149,10 @@ impl App {
                 source,
                 ..
             } => {
-                let size = browse.map_or(100, crate::browse::Browse::size);
+                let size = browse.map_or(
+                    crate::browse::DEFAULT_PAGE_SIZE,
+                    crate::browse::Browse::size,
+                );
                 let location = table.as_ref().map_or_else(
                     || {
                         if let Some(table) = source.strip_prefix("schema:") {

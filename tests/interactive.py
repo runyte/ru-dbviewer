@@ -26,6 +26,42 @@ class InteractiveTests(unittest.TestCase):
  def filter(self,view,column,op,value=None):
   self.invoke('add-filter',view);self.choice(column);self.submit(choice=op)
   if value is not None:self.submit(value=value)
+ def test_thousand_row_pages_preserve_navigation_and_inspection(self):
+  with closing(sqlite3.connect(self.path)) as c:
+   c.executescript("WITH RECURSIVE n(i) AS (SELECT 5 UNION ALL SELECT i+1 FROM n WHERE i<1005) INSERT INTO items SELECT i,'item',NULL FROM n;")
+  rows=self.rows();h=self.h
+  self.assertEqual(len(h.views[rows]['rows']),100)
+  original=h.views[rows]
+  for invalid in ['0','1001','invalid']:
+   self.invoke('page-size',rows);result=h.submit({'size':invalid})
+   self.assertIn('error',result);self.assertEqual(h.views[rows],original)
+  self.invoke('page-size',rows);self.submit(size='1000');h.wait_jobs()
+  self.assertEqual([r['cells'][0]['text'] for r in h.views[rows]['rows']],[str(i) for i in range(1,1001)])
+  self.invoke('next',rows);h.wait_jobs()
+  self.assertEqual([r['cells'][0]['text'] for r in h.views[rows]['rows']],[str(i) for i in range(1001,1006)])
+  self.invoke('browse-sql',rows);sql=h.buffers[list(h.buffers)[-1]]
+  self.assertIn('LIMIT 1000 OFFSET 1000',sql)
+  self.invoke('activate',rows,['4']);record=h.active
+  self.assertIn('1005',str(h.views[record]['rows'][0]))
+  self.assertIn('row 1005',h.views[record]['title'])
+  self.invoke('back',record);self.invoke('next',rows);h.wait_jobs()
+  self.assertEqual(h.views[rows]['rows'],[])
+  self.invoke('previous',rows);h.wait_jobs();self.invoke('previous',rows);h.wait_jobs()
+  self.assertEqual(len(h.views[rows]['rows']),1000)
+ def test_large_page_shortens_previews_without_dropping_rows(self):
+  text='"\\é'*160
+  with closing(sqlite3.connect(self.path)) as c:
+   c.executemany('INSERT INTO items VALUES(?,?,?)',[(i,text,text) for i in range(5,1001)]);c.commit()
+  rows=self.rows();h=self.h
+  self.invoke('page-size',rows);self.submit(size='1000');h.wait_jobs()
+  model=h.views[rows]
+  self.assertEqual(len(model['rows']),1000)
+  self.assertLess(len(json.dumps(model,ensure_ascii=False).encode()),750000)
+  self.assertEqual(model['rows'][-1]['cells'][0]['text'],'1000')
+  self.assertIn('…',model['rows'][-1]['cells'][1]['text'])
+  self.invoke('activate',rows,['999']);record=h.active
+  self.assertIn('1000',str(h.views[record]['rows'][0]))
+  self.assertGreater(len(h.views[record]['rows'][1]['text']),len(model['rows'][-1]['cells'][1]['text']))
  def test_navigation_json_raw_and_closed_parent(self):
   rows=self.rows();h=self.h;before=h.views[rows];jobs=len(h.jobs)
   self.invoke('activate',rows,['0']);record=h.active

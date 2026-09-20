@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Bounded browse expressions. Only validated ordinals select quoted identifiers.
 use crate::{Result, db::Table, query, results::Column};
+pub const DEFAULT_PAGE_SIZE: usize = 100;
+pub const MAX_PAGE_SIZE: usize = 1000;
+
 #[derive(Clone, Debug, Default)]
 pub struct Browse {
     pub columns: Vec<Column>,
@@ -102,7 +105,7 @@ fn number(s: &str) -> bool {
 impl Browse {
     pub fn size(&self) -> usize {
         if self.page_size == 0 {
-            100
+            DEFAULT_PAGE_SIZE
         } else {
             self.page_size
         }
@@ -133,7 +136,10 @@ impl Browse {
         pg: bool,
         literals: bool,
     ) -> Result<(String, Vec<String>)> {
-        if self.filters.len() > 16 || self.selected.len() > 8 || !(1..=100).contains(&self.size()) {
+        if self.filters.len() > 16
+            || self.selected.len() > 8
+            || !(1..=MAX_PAGE_SIZE).contains(&self.size())
+        {
             return Err("Browse limits exceeded".into());
         }
         let selected = if self.selected.is_empty() {
@@ -345,6 +351,29 @@ mod tests {
         b.filters[1].column = 9;
         assert!(b.compile(&table, 0, &[], false, false).is_err());
     }
+    #[test]
+    fn page_size_bounds_and_offsets_in_both_dialects() {
+        let table = Table {
+            schema: "main".into(),
+            name: "items".into(),
+            kind: "table".into(),
+        };
+        let mut browse = Browse::default();
+        assert_eq!(browse.size(), 100);
+        for pg in [false, true] {
+            for (size, expected) in [(0, 100), (1, 1), (1000, 1000)] {
+                browse.page_size = size;
+                let (sql, _) = browse.compile(&table, 2, &[], pg, false).unwrap();
+                assert!(
+                    sql.contains(&format!("LIMIT {expected} OFFSET {}", expected * 2)),
+                    "{sql}"
+                );
+            }
+            browse.page_size = 1001;
+            assert!(browse.compile(&table, 0, &[], pg, false).is_err());
+        }
+    }
+
     #[test]
     fn numeric_values_are_explicit_and_precise() {
         let b = Browse {

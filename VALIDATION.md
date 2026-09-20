@@ -1,5 +1,34 @@
 # Validation register
 
+## Browse page size — 2026-09-20
+
+Browse pages now accept 1–1,000 rows and still default to 100. The renderer uses
+that configured size and budgets encoded cell previews across every retained
+row, avoiding gaps caused by silently dropping a page's publication tail.
+SQL-result pages remain 100 rows over already retained results.
+
+On Linux x86-64, formatting, locked all-target Clippy with warnings denied,
+42 ordinary Rust tests, 17 public-wire tests, 44 interactive tests, nine
+full-value tests, and eight native-editor PTY cases passed. Native acceptance
+used the local Runyte debug executable with both row-action and full-value
+feature expectations enabled. The shared database browsing contract also passed
+against a disposable PostgreSQL 17 container. The other four PostgreSQL fixture
+cases were not rerun for this change. macOS and ARM64 were not exercised.
+Fresh combined coverage is 90.04% (5,686 of 6,315 lines), above the unchanged
+75% floor; earlier profiles were removed before measurement.
+
+`page_size_bounds_and_offsets_in_both_dialects` in `src/browse.rs` covers default,
+minimum and maximum SQL page sizes, offsets, and rejection above the maximum.
+`browse_filter_contract` in `tests/databases.rs` checks a full 1,000-row page,
+a partial next page and an empty following page in SQLite and PostgreSQL.
+`test_thousand_row_pages_preserve_navigation_and_inspection` in
+`tests/interactive.py` covers native-input validation, default size, complete
+row identities, generated SQL, next/previous navigation and last-record inspection.
+`test_large_page_shortens_previews_without_dropping_rows` covers JSON-expanding
+text, bounded publication, shortened cell previews and retained record values.
+Both interactive regressions run with legacy, row-action and presentation feature
+profiles.
+
 ## Actions, metadata and full-value documents — 2026-09-19
 
 Linux x86-64 native acceptance passed all eight cases in `tests/native.py`, with
