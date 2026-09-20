@@ -401,6 +401,27 @@ class NativeTests(unittest.TestCase):
             editor.send(b"-")
             editor.wait_for(lambda: editor.shows("[rows]") and not editor.shows("name [TEXT]"))
 
+    @unittest.skipUnless(os.environ.get("DBVIEWER_EXPECT_PATH_COMPLETION") == "1",
+                         "requires a host with input-path-completion")
+    def test_native_live_path_completion_and_short_labels(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), NativeEditor(self, persistent=persistent) as editor:
+                editor.send(b":cd ..\r")
+                editor.wait_for(lambda: editor.shows("working directory:"))
+                editor.command("db-connect")
+                editor.wait_for(lambda: editor.shows("Database type"))
+                editor.send(b"\r")
+                editor.wait_for(lambda: editor.shows("SQLite form"))
+                self.assertTrue(editor.shows("Local SQLite file (required)"))
+                editor.send(b"native\t../tas")
+                editor.wait_for(lambda: editor.shows("tasks.sqlite3") and editor.shows("complete"))
+                self.assertFalse(editor.shows("Resolved paths"))
+                editor.send(b"\t")
+                editor.wait_for(lambda: editor.shows("../tasks.sqlite3"))
+                self.assertTrue(editor.shows("SQLite form"))
+                editor.send(b"\r")
+                editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
+
     def test_native_completion_back_and_unsaved_sql(self):
         with NativeEditor(self) as editor:
             editor.command("db-connect")

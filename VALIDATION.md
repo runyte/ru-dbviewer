@@ -1,5 +1,35 @@
 # Validation register
 
+## Connection forms and native path completion — 2026-09-20
+
+The SQLite form now labels its path as a local file using a short, fully visible
+field label. Database-type and PostgreSQL form titles distinguish local files
+from database servers. HTTP/HTTPS SQLite paths are refused explicitly; remote
+PostgreSQL continues to use the existing native database protocol and TLS support.
+
+On hosts negotiating `input-path-completion`, the SQLite text field opts into
+native local suggestions. Older hosts receive the original text field shape and
+retain submitted-path completion. The new fixture is layered onto the frozen
+schema only in feature-enabled tests; the frozen fixture bytes are unchanged.
+
+Linux x86-64 validation passed formatting, locked all-target Clippy with warnings
+denied, 42 ordinary Rust tests, 17 wire tests, 61 interactive tests, nine full-value
+tests, and all nine native PTY cases. The final native run used the updated local
+Runyte debug build with row-action, full-value and path-completion expectations
+enabled. `test_native_live_path_completion_and_short_labels` in `tests/native.py`
+checks the complete path label and live completion before Enter, in both standalone
+and persistent modes, including after `:cd` changes the editor working directory.
+`test_sqlite_form_has_short_local_label_and_negotiated_completion` in
+`tests/interactive.py` covers new and legacy host shapes; the path-resolution unit
+case in `src/paths.rs` covers explicit URL refusal. The native tests passed again
+after the final host workspace-root correction.
+
+Fresh combined line coverage is **90.09%** (5,702 of 6,329 lines), above the
+unchanged 75% floor. Earlier profiles were removed before measurement. Database
+adapter code did not change and the five optional PostgreSQL fixture cases were
+not rerun for this connection-UI change. Native macOS/ARM64 and packaged release
+acceptance remain separate gates.
+
 ## Browse page size — 2026-09-20
 
 Browse pages now accept 1–1,000 rows and still default to 100. The renderer uses

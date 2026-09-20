@@ -11,6 +11,9 @@ pub fn resolve(root: &Path, text: &str) -> Result<Destination> {
     if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
         return Err("Enter an existing database path or directory".into());
     }
+    if text.starts_with("http://") || text.starts_with("https://") {
+        return Err("SQLite needs a local file; use PostgreSQL for a database server".into());
+    }
     let path = Path::new(text);
     let path = if path.is_absolute() {
         path.to_owned()
@@ -96,6 +99,12 @@ mod tests {
         ));
         assert!(matches!(resolve(t.path(),"led").unwrap(),Destination::Choices(c) if c.len()==1));
         assert!(resolve(t.path(), "missing").is_err());
+        for url in [
+            "http://example.invalid/data.sqlite",
+            "https://example.invalid/data.sqlite",
+        ] {
+            assert!(resolve(t.path(), url).unwrap_err().contains("local file"));
+        }
         assert!(resolve(t.path(), "$(echo secret)").is_err());
         for i in 0..63 {
             std::fs::write(t.path().join(format!("many-{i}")), b"").unwrap();

@@ -53,7 +53,7 @@ impl App {
             "connect" | "connect-new" => {
                 self.pick(
                     &ctx,
-                    "Database type",
+                    "Database type · SQLite: local file · PostgreSQL: server",
                     vec!["SQLite".into(), "PostgreSQL".into()],
                     Input::Backend,
                 )

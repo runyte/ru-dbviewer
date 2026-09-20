@@ -117,6 +117,13 @@ class InteractiveTests(unittest.TestCase):
   h.fail_once='buffer.create';h.fail_code='conflict';self.invoke('query',rows);self.invoke('query',rows);self.assertEqual(len(h.buffers),2)
   for text in h.buffers.values():self.assertIn('::db-return',text);self.assertIn('including unsaved edits',text)
   self.assertEqual(list(self.root.glob('*.sql')),[])
+ def test_sqlite_form_has_short_local_label_and_negotiated_completion(self):
+  self.invoke('connect');self.submit(choice='SQLite');form=list(self.h.inputs.values())[-1]
+  self.assertIn('local file',form['title'])
+  path=next(f for f in form['fields'] if f['id']=='path')
+  self.assertEqual(path['label'],'Local SQLite file (required)')
+  self.assertEqual(path.get('completion'),'local-path' if 'input-path-completion' in self.h.features else None)
+  self.assertIn('web URLs are not supported',path['validation_message'])
  def test_path_completion_and_validation_keeps_surface(self):
   h=self.h;self.invoke('connect');self.submit(choice='SQLite');surface=next(iter(h.inputs))
   for revision,name,path,expected in [('r:1','','missing','invalid'),('r:2','ledger','led','valid')]:
@@ -239,5 +246,8 @@ class PresentationTests(RowActionTests):
   self.assertIn({'label':'Database type','value':'TEXT'},model['metadata'])
   self.invoke('raw',h.active)
   self.assertEqual(h.views[h.active]['action_presentation']['raw']['label'],'Show formatted value')
+
+class PathCompletionTests(InteractiveTests):
+ features=('input-path-completion',)
 
 if __name__=='__main__':unittest.main()

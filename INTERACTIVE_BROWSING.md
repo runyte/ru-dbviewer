@@ -4,8 +4,10 @@
 
 The integration boundary remains runyte-1. The optional `view-row-actions`
 feature adds selection-dependent actions on supporting hosts. Native forms support required fields
-and revision-checked asynchronous validation. They do not expose path completion
-or initial values. Pickers support search but only one choice. Native view rows
+and revision-checked asynchronous validation. Hosts negotiating
+`input-path-completion` also offer native local path suggestions in opted-in text
+fields. Initial values remain unavailable. Pickers support search but only one
+choice. Native view rows
 have stable IDs; base-profile actions are model-wide. Commands have
 a single context, so global db-* aliases need separate registrations from the
 short contextual action names. pane.show can return to an explicit retained
@@ -14,7 +16,8 @@ parent without rerunning SQL. Ordinary SQL buffers must use a command to return.
 ## Implementation
 
 The plugin uses existing public APIs: revision-checked validation for connection
-forms, explicit submitted path completion, searchable paged choices for columns,
+forms, negotiated native local path completion with submitted-path fallback,
+searchable paged choices for columns,
 and retained view identities for parent navigation. The generated configuration
 adds the scoped `back: "-"` binding; no global SQL editing key is taken over.
 `db-return` and `db-transactions` are the new documented global aliases.

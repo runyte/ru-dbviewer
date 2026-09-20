@@ -69,15 +69,21 @@ Local acceptance is recorded in [VALIDATION.md](VALIDATION.md).
 
 ## Connect and browse
 
-1. Run `::db-connect`, choose SQLite or PostgreSQL, and enter a unique profile name.
-2. SQLite opens an **existing** file. Both Profile name and Existing database path
-   are required. Tab/Shift-Tab moves between fields; Enter validates them without
-   losing entered values. Absolute paths work; relative paths use the workspace
-   root. Enter a directory or filename prefix to open a searchable completion
-   picker, then choose a directory to continue or a file to connect. The catalog
-   shows the resolved path. Completion scans at most 4,096 entries and returns
-   at most 62 matches; refine the path if the limit is exceeded. Paths are literal:
-   no shell, environment-variable or tilde expansion is performed.
+1. Run `::db-connect`, choose **SQLite** for a local database file or
+   **PostgreSQL** for a local or remote database server, and enter a unique profile name.
+2. SQLite opens an **existing** file. Both Profile name and Local SQLite file
+   are required. Enter validates the form without losing entered values. Absolute paths work; relative paths use the workspace
+   root. On hosts with `input-path-completion`, typing a directory or filename
+   prefix shows local suggestions. Up/Down selects; Tab completes a path or
+   descends into a directory; Shift-Tab returns to the previous field. Enter
+   submits the form. On older hosts, submit a directory or prefix with Enter
+   to open a searchable completion picker, then choose a directory to continue
+   or a file to connect. The catalog shows the resolved path. Native suggestions
+   show at most 512 candidates;
+   refine the prefix to narrow them. Submitted-path fallback scans at most 4,096
+   entries and returns at most 62 matches; refine the path if its limit is
+   exceeded. Paths are literal: no shell, environment-variable or tilde expansion
+   is performed.
    PostgreSQL accepts a hostname or Unix socket directory, port, database and user.
 3. PostgreSQL passwords come from a masked prompt or a named inherited environment
    variable. An empty prompt supports socket or certificate authentication.
@@ -115,6 +121,12 @@ TCP PostgreSQL defaults to certificate **and hostname** verification. A custom
 CA PEM and client certificate/key PEM paths are supported. Plaintext TCP is an
 explicit profile option; failed TLS never silently downgrades. Unix sockets do
 not use TLS. The plugin does not read every libpq option or `.pgpass`.
+
+Remote PostgreSQL uses the PostgreSQL network protocol, with host, port, database
+and credentials entered in its connection form. Enter a hostname such as
+`db.example.com`, without an `http://` or `https://` prefix. SQLite paths identify
+local files and do not accept web URLs. Managed SSH tunnels and HTTP database
+APIs are not supported; an already established external tunnel can be used.
 
 ## SQL buffers
 

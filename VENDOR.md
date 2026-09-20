@@ -29,3 +29,7 @@ from the coordinated `view-row-actions` host change (MPL-2.0). Feature-enabled
 wire tests layer it onto the retained base schema; fallback tests continue to
 validate against that unchanged base schema. It does not replace or claim a
 new upstream revision for the frozen fixtures above.
+
+`tests/fixtures/input-path-completion.json` is the additive field definition from
+the coordinated `input-path-completion` host extension (MPL-2.0). Feature-aware
+tests layer it onto the unchanged frozen schema; legacy tests omit it.

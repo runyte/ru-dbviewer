@@ -264,6 +264,7 @@ pub struct App {
     row_actions: bool,
     action_presentation: bool,
     view_metadata: bool,
+    path_completion: bool,
     document_views: bool,
     full_slots: Arc<tokio::sync::Semaphore>,
     full_jobs: HashMap<String, (String, CancellationToken)>,
@@ -296,6 +297,7 @@ impl App {
             "view-metadata",
             "view-document",
             "job-feedback",
+            "input-path-completion",
         ];
         let requested = known
             .iter()
@@ -333,6 +335,7 @@ impl App {
         let row_actions = features.iter().any(|f| f == "view-row-actions");
         let action_presentation = features.iter().any(|f| f == "view-action-presentation");
         let view_metadata = features.iter().any(|f| f == "view-metadata");
+        let path_completion = features.iter().any(|f| f == "input-path-completion");
         let document_views = features.iter().any(|f| f == "view-document")
             && features.iter().any(|f| f == "job-feedback");
         let saved = rpc.request("state.get", json!({})).await?;
@@ -377,6 +380,7 @@ impl App {
             row_actions,
             action_presentation,
             view_metadata,
+            path_completion,
             document_views,
             full_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             full_jobs: HashMap::new(),

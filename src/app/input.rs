@@ -111,12 +111,16 @@ impl App {
             Input::Backend => {
                 let choice = value("choice");
                 if choice == "SQLite" {
+                    let mut path = json!({"id":"path","label":"Local SQLite file (required)","kind":"text","required":true,"maximum_length":4096,"validate":true,"validation_message":"Use an existing local SQLite file or directory/prefix; web URLs are not supported"});
+                    if self.path_completion {
+                        path["completion"] = json!("local-path");
+                    }
                     self.form(
                         &ctx,
-                        "SQLite form · Tab: next field · Enter: resolve path / submit",
+                        "SQLite form · local file",
                         vec![
                             json!({"id":"name","label":"Profile name (required)","kind":"text","required":true,"maximum_length":64,"validate":true,"validation_message":"Use a unique, nonempty profile name (maximum 64 bytes)"}),
-                            json!({"id":"path","label":"Existing database path (required; relative to workspace; directory/prefix opens completion)","kind":"text","required":true,"maximum_length":4096,"validate":true,"validation_message":"Path unavailable or too many matches; enter an existing file or refine the prefix"}),
+                            path,
                         ],
                         Input::Sqlite,
                     )
@@ -124,7 +128,7 @@ impl App {
                 } else if choice == "PostgreSQL" {
                     self.form(
                         &ctx,
-                        "PostgreSQL connection",
+                        "PostgreSQL connection · local or remote server",
                         vec![
                             field("name", "Profile name", "text", true),
                             field("host", "Host or Unix socket directory", "text", true),
