@@ -13,7 +13,7 @@ class InteractiveTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name);self.path=self.root/'ledger.sqlite'
   with closing(sqlite3.connect(self.path)) as c:
    c.executescript("CREATE TABLE items(id INTEGER PRIMARY KEY,name TEXT,payload TEXT); INSERT INTO items VALUES(1,'alpha','{\"n\":123456789012345678901234567890,\"a\":[1,2]}'),(2,'beta',NULL),(3,'','{}'),(4,'100% literal','[]');")
-  self.h=Host(self.tmp.name,features=getattr(self,"features",()));self.addCleanup(self.h.close)
+  self.h=Host(self.tmp.name,features=getattr(self,"features",()),excluded_env=("DBVIEWER_FORM_TEST_PASSWORD_NOT_SET",));self.addCleanup(self.h.close)
  def good(self,r):self.assertNotIn('error',r,r)
  def invoke(self,cmd,view=None,rows=None,buffer=None):self.good(self.h.invoke(cmd,view,rows,buffer))
  def submit(self,**values):self.good(self.h.submit(values))
@@ -26,6 +26,35 @@ class InteractiveTests(unittest.TestCase):
  def filter(self,view,column,op,value=None):
   self.invoke('add-filter',view);self.choice(column);self.submit(choice=op)
   if value is not None:self.submit(value=value)
+ def test_postgres_form_and_password_handoff(self):
+  self.invoke('open');self.invoke('connect-new',self.h.active);self.submit(choice='PostgreSQL')
+  form=list(self.h.inputs.values())[-1]
+  fields={field['id']:field for field in form['fields']}
+  # The retained schema allows underscores, but supported native hosts do not.
+  for field in fields:self.assertRegex(field,r'^[a-z0-9-]{1,48}$')
+  self.assertIn('password-env',fields);self.assertEqual(fields['plaintext']['kind'],'boolean')
+  values={field:False if spec['kind']=='boolean' else '' for field,spec in fields.items()}
+  values.update(name='fixture',host='localhost',database='fixture',user='fixture')
+  self.good(self.h.submit(values))
+  profile=self.h.state['document']['data']['profiles'][0]
+  self.assertEqual(profile['port'],5432);self.assertFalse(profile['plaintext'])
+  self.assertEqual(profile['password_env'],'');self.assertNotIn('password-env',profile)
+  password=list(self.h.inputs.values())[-1]
+  self.assertEqual(password['fields'][0]['kind'],'secret')
+  self.good(self.h.submit({},False));self.assertFalse(self.h.jobs)
+
+ def test_postgres_form_preserves_password_environment_name(self):
+  self.invoke('connect');self.submit(choice='PostgreSQL')
+  form=list(self.h.inputs.values())[-1]
+  values={field['id']:False if field['kind']=='boolean' else '' for field in form['fields']}
+  values.update(name='fixture',host='localhost',database='fixture',user='fixture')
+  values['password-env']='DBVIEWER_FORM_TEST_PASSWORD_NOT_SET'
+  # The missing variable stops before database IO and proves the submitted ID is read.
+  result=self.h.submit(values)
+  self.assertIn('Password environment variable is unavailable',result['error']['message'])
+  self.assertEqual(self.h.state['document']['data']['profiles'][0]['password_env'],values['password-env'])
+  self.assertFalse(self.h.inputs);self.assertFalse(self.h.jobs)
+
  def test_thousand_row_pages_preserve_navigation_and_inspection(self):
   with closing(sqlite3.connect(self.path)) as c:
    c.executescript("WITH RECURSIVE n(i) AS (SELECT 5 UNION ALL SELECT i+1 FROM n WHERE i<1005) INSERT INTO items SELECT i,'item',NULL FROM n;")

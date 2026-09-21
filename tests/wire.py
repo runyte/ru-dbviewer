@@ -25,7 +25,7 @@ HELLO = next(x['message'] for x in FIXTURES if x['message']['type']=='hello')
 REGISTERED = next(x['message'] for x in FIXTURES if x['message']['type']=='registered')
 
 class Host:
- def __init__(self, directory, version='0.3.0', features=()):
+ def __init__(self, directory, version='0.3.0', features=(), excluded_env=()):
   self.features=list(features);schema=copy.deepcopy(SCHEMA)
   if 'input-path-completion' in features:schema['$defs']['inputField']['properties']['completion']=json.loads((ROOT/'fixtures/input-path-completion.json').read_text())
   if 'view-row-actions' in features:schema['$defs']['row']['properties']['actions']=json.loads((ROOT/'fixtures/view-row-actions.json').read_text())['row_actions']
@@ -43,7 +43,8 @@ class Host:
   if 'job-feedback' in features:schema['$defs']['job.finish']['properties']['params']['properties']['message']={'type':'string','minLength':1,'maxLength':1024}
   self.model_validator=Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/model'})
   self.validator=Draft202012Validator({**schema,'anyOf':[{'$ref':'#/$defs/pluginMessage'}]})
-  self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0,env={**os.environ,'TMPDIR':directory,'XDG_CONFIG_HOME':str(Path(directory)/'config')})
+  environment={key:value for key,value in os.environ.items() if key not in excluded_env}
+  self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0,env={**environment,'TMPDIR':directory,'XDG_CONFIG_HOME':str(Path(directory)/'config')})
   self.selector=selectors.DefaultSelector();self.selector.register(self.child.stdout,selectors.EVENT_READ)
   self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
   self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();self.validator.validate(self.registration)

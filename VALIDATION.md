@@ -1,5 +1,54 @@
 # Validation register
 
+## PostgreSQL connection form rejection — 2026-09-21
+
+Choosing PostgreSQL after `::db` → Tab → Add database closed the picker without
+opening the connection form on Linux and macOS. Notifications reported
+`Plugin result rejected` and
+`Plugin invocation command: Host refused operation: invalid_argument`.
+
+`App::submit` in `src/app/input.rs` authored the form field as `password_env`.
+Runyte's native input validator uses the host name grammar, which rejects
+underscores, so the whole form failed before any database connection attempt.
+The retained test schema accepts underscores in input field IDs; schema-only
+validation and direct PostgreSQL adapter tests did not exercise this rejection.
+The form and submission handler now use `password-env`. The saved profile still
+uses `password_env`, preserving existing profiles and environment-based passwords.
+No host protocol or database adapter change is required.
+
+`test_postgres_form_and_password_handoff` in `tests/interactive.py` checks the
+database action, native-compatible field IDs, default port, verified TLS,
+unchanged saved keys, masked password prompt and cancellation before database IO.
+`test_postgres_form_preserves_password_environment_name` checks that the submitted
+environment name reaches password resolution. Both run with legacy and negotiated
+feature profiles. `test_postgres_connection_form_from_database_actions` in
+`tests/native.py` follows the real Tab-menu flow through form submission to the
+password prompt in standalone and persistent modes, then checks notifications.
+The new regressions failed against the original plugin and pass with this fix.
+
+Linux x86-64 checks passed: formatting, locked all-target Clippy with warnings
+denied, 42 ordinary Rust tests, 17 wire tests, 69 interactive tests, nine full-value
+tests and all ten native PTY cases. Native tests used the local Runyte debug build
+with row-action, full-value and path-completion expectations enabled. Rust builds
+used `CARGO_BUILD_JOBS=1` and `CARGO_INCREMENTAL=0`; suites ran sequentially and
+Rust tests used `RUST_TEST_THREADS=1`.
+
+Fresh combined line coverage is **87.17%** (5,517 of 6,329 lines), above the
+unchanged 75% floor. Five PostgreSQL server-fixture tests remained ignored;
+server tools are not installed locally and database adapter code did not change.
+The new native case deliberately stops at the password prompt without connecting
+to a database. Existing CI runs the native suite and PostgreSQL server fixtures on
+Linux and macOS. This run does not establish macOS, ARM64, exact-pinned-host or
+packaged-release acceptance.
+
+Independent review found one minor fixture-isolation issue: the missing-password-
+environment test assumed its sentinel variable was absent from the inherited
+environment. `Host` in `tests/wire.py` now accepts explicit child-environment
+exclusions, and the interactive fixture excludes this sentinel without mutating
+process-global environment. All 69 interactive tests passed again with the
+sentinel deliberately set in the parent, followed by all 17 wire tests. Re-review
+reported no remaining findings. The normal debug plugin was rebuilt after coverage.
+
 ## Connection forms and native path completion — 2026-09-20
 
 The SQLite form now labels its path as a local file using a short, fully visible

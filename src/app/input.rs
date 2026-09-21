@@ -136,7 +136,7 @@ impl App {
                             field("database", "Database", "text", true),
                             field("user", "User", "text", true),
                             field(
-                                "password_env",
+                                "password-env",
                                 "Password environment variable (optional)",
                                 "text",
                                 false,
@@ -183,7 +183,7 @@ impl App {
                         },
                         database: value("database"),
                         user: value("user"),
-                        password_env: value("password_env"),
+                        password_env: value("password-env"),
                         plaintext: v["plaintext"].as_bool().unwrap_or(false),
                         ca: value("ca"),
                         certificate: value("certificate"),

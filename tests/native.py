@@ -341,6 +341,27 @@ class NativeTests(unittest.TestCase):
         editor.send(b"native\t"+str(editor.database).encode()+b"\r")
         editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
 
+    def test_postgres_connection_form_from_database_actions(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), NativeEditor(self, persistent=persistent) as editor:
+                editor.command("db")
+                editor.wait_for(lambda: editor.shows("[databases]"))
+                editor.send(b"\t")
+                editor.wait_for(lambda: editor.shows("Application actions"))
+                editor.send(b"connect-new\r")
+                editor.wait_for(lambda: editor.shows("Database type"))
+                editor.send(b"PostgreSQL\r")
+                editor.wait_for(lambda: editor.shows("PostgreSQL connection"))
+                self.assertTrue(editor.shows("Host or Unix socket directory"))
+                # Submit required fields, retaining the default port and verified TLS.
+                editor.send(b"native-pg\tlocalhost\t\tfixture\tfixture\r")
+                editor.wait_for(lambda: editor.shows("PostgreSQL password"))
+                editor.send(b"\x1b")
+                editor.wait_for(lambda: not editor.shows("PostgreSQL password"))
+                editor.send(b":notifications\r")
+                editor.wait_for(lambda: editor.shows("[notifications]"))
+                self.assertFalse(editor.shows("Plugin result rejected"), editor.screen.text())
+
     def test_sqlite_browse_query_and_stop(self):
         with NativeEditor(self) as editor:
             self.connect(editor)
