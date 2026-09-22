@@ -26,6 +26,42 @@ class InteractiveTests(unittest.TestCase):
  def filter(self,view,column,op,value=None):
   self.invoke('add-filter',view);self.choice(column);self.submit(choice=op)
   if value is not None:self.submit(value=value)
+ def test_reassociated_sql_uses_current_connection_generation(self):
+  catalog=self.connect();h=self.h;self.invoke('query',catalog);buffer=next(reversed(h.buffers))
+  self.invoke('mode',catalog);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()
+  self.invoke('use',buffer=buffer);self.submit(choice='ledger');h.buffers[buffer]='SELECT 42'
+  self.invoke('run',buffer=buffer)
+  self.assertNotIn('Connection changed',h.views[h.active]['status']['text'])
+  self.invoke('activate',h.active,['0']);self.submit(confirmed=True);h.wait_jobs()
+  self.assertNotIn('Connection changed',h.views[h.active]['status']['text'])
+  self.assertIn('query',h.views[h.active]['actions'])
+  self.invoke('rollback',buffer=buffer);h.wait_jobs()
+
+ def test_back_restores_field_selection_using_current_pane_revision(self):
+  rows=self.rows();h=self.h;self.invoke('activate',rows,['0'])
+  ranges=[{'anchor':47,'head':52}]
+  h.selection={'buffer':'b:browser','revision':'q:1','ranges':ranges,'primary':0}
+  self.invoke('activate',h.active,['2'])
+  h.selection={'buffer':'b:browser','revision':'q:2','ranges':[{'anchor':0,'head':0}],'primary':0}
+  self.invoke('back',h.active)
+  self.assertEqual(h.selection_sets[-1]['ranges'],ranges)
+  self.assertEqual(h.selection_sets[-1]['expected_revision'],'q:2')
+
+ def test_navigation_reuses_one_buffer_and_discards_forward_branches(self):
+  rows=self.rows();h=self.h
+  for _ in range(15):
+   self.invoke('activate',rows,['0']);self.assertEqual(h.active,rows)
+   self.invoke('activate',rows,['2']);self.assertEqual(h.active,rows)
+   self.invoke('back',rows);self.assertIn('[record]',h.views[rows]['title'])
+   self.invoke('back',rows);self.assertIn('[rows]',h.views[rows]['title'])
+  self.assertEqual(len(h.views),1)
+  self.assertEqual(h.requests.count('view.create'),1)
+  self.invoke('query',rows);buffer=list(h.buffers)[-1]
+  h.buffers[buffer]='SELECT 42'
+  self.invoke('run',buffer=buffer);h.wait_jobs();self.assertEqual(h.active,rows)
+  self.invoke('return',buffer=buffer);self.assertIn('[rows]',h.views[rows]['title'])
+  self.assertEqual(h.requests.count('view.create'),1)
+
  def test_postgres_form_and_password_handoff(self):
   self.invoke('open');self.invoke('connect-new',self.h.active);self.submit(choice='PostgreSQL')
   form=list(self.h.inputs.values())[-1]
@@ -98,7 +134,7 @@ class InteractiveTests(unittest.TestCase):
   self.assertIn('123456789012345678901234567890',json.dumps(h.views[value]));self.invoke('activate',value,['0']);self.assertEqual(len(h.views[value]['rows']),1)
   self.invoke('activate',value,['0']);self.invoke('raw',value);self.assertIn('Raw value',h.views[value]['status']['text'])
   self.invoke('back',value);self.assertEqual(h.active,record);self.invoke('back',record);self.assertEqual(h.active,rows);self.assertEqual(h.views[rows],before);self.assertEqual(len(h.jobs),jobs)
-  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':record}});self.invoke('back',value);self.assertEqual(h.views[h.active]['title'],'[databases]')
+  self.assertEqual(len(h.views),1);h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':record}});self.assertIn('error',h.invoke('back',value));h.views.clear();h.revisions.clear();self.invoke('open');self.assertEqual(h.views[h.active]['title'],'[databases]')
  def test_truncated_json_prefix_and_raw_keep_retained_data(self):
   payload=json.dumps({'assignment':{'members':[{'id':i,'name':'member'} for i in range(4000)]}},separators=(',',':'))
   with closing(sqlite3.connect(self.path)) as c:
@@ -132,13 +168,13 @@ class InteractiveTests(unittest.TestCase):
   jobs=len(h.jobs);self.invoke('browse-sql',rows);self.assertEqual(len(h.jobs),jobs);b=list(h.buffers)[-1];sql=h.buffers[b];self.assertNotIn('?',sql);self.assertIn('ORDER BY',sql)
   with closing(sqlite3.connect(self.path)) as c:self.assertEqual(c.execute(sql).fetchall()[0][0],2)
   self.invoke('return',buffer=b);self.assertEqual(h.active,rows)
-  self.invoke('match',filters);self.submit(choice='Match ANY (OR)');self.invoke('toggle-filter',filters,['1']);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertTrue('Page size: 1' in h.views[rows]['status']['text'] or {'label':'Page size','value':'1'} in h.views[rows].get('metadata',[]))
-  self.invoke('remove-filter',filters,['1']);self.invoke('clear-filters',filters);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'4')
+  self.invoke('filters',rows);self.invoke('match',filters);self.submit(choice='Match ANY (OR)');self.invoke('toggle-filter',filters,['1']);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertTrue('Page size: 1' in h.views[rows]['status']['text'] or {'label':'Page size','value':'1'} in h.views[rows].get('metadata',[]))
+  self.invoke('filters',rows);self.invoke('remove-filter',filters,['1']);self.invoke('clear-filters',filters);self.invoke('apply-filters',filters);h.wait_jobs();self.assertEqual(len(h.views[rows]['rows']),1);self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'4')
  def test_null_empty_literal_and_edit(self):
   rows=self.rows();h=self.h;self.invoke('filters',rows);f=h.active
   self.filter(f,'payload','is NULL');self.invoke('apply-filters',f);h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'2')
-  self.invoke('edit-filter',f,['0']);self.choice('name');self.submit(choice='equals');self.submit(value='');self.invoke('apply-filters',f);h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'3')
-  self.invoke('clear-filters',f);self.filter(f,'name','contains (literal)','%');self.invoke('apply-filters',f);h.wait_jobs();self.assertEqual([r['cells'][0]['text'] for r in h.views[rows]['rows']],['4'])
+  self.invoke('filters',rows);self.invoke('edit-filter',f,['0']);self.choice('name');self.submit(choice='equals');self.submit(value='');self.invoke('apply-filters',f);h.wait_jobs();self.assertEqual(h.views[rows]['rows'][0]['cells'][0]['text'],'3')
+  self.invoke('filters',rows);self.invoke('clear-filters',f);self.filter(f,'name','contains (literal)','%');self.invoke('apply-filters',f);h.wait_jobs();self.assertEqual([r['cells'][0]['text'] for r in h.views[rows]['rows']],['4'])
  def test_columns_search_query_guidance_and_collision(self):
   rows=self.rows();h=self.h;self.invoke('columns',rows);self.choice('Find column');self.submit(search='payload');self.choice('payload');self.choice('Apply selections');self.assertEqual(len(h.views[rows]['columns']),2)
   self.invoke('columns',rows);self.choice('Find column');self.submit(search='payload');self.choice('payload');self.choice('Apply selections');self.assertEqual(len(h.views[rows]['columns']),3)
@@ -186,7 +222,7 @@ class InteractiveTests(unittest.TestCase):
   result=h.active;self.invoke('mode',catalog);self.assertIn('error',h.submit({'choice':'READ ONLY'}));self.invoke('transactions',result);tx=h.active;self.assertIn('pending',str(h.views[tx]).lower());self.assertIn('1 affected',str(h.views[tx]))
   self.invoke('disconnect',tx,['0']);self.good(h.submit({},False));self.assertTrue(h.leases)
   self.invoke('commit',tx,['0']);h.wait_jobs();self.assertFalse(h.leases);self.assertEqual(h.views[tx]['rows'],[])
-  self.assertIn('error',h.invoke('commit',tx,['0']));self.invoke('mode',catalog);self.submit(choice='READ ONLY');h.wait_jobs();self.assertIn('error',h.invoke('run',buffer=b))
+  self.assertIn('error',h.invoke('commit',tx,['0']));self.invoke('back',tx);self.invoke('mode',h.active);self.submit(choice='READ ONLY');h.wait_jobs();self.assertIn('error',h.invoke('run',buffer=b))
  def test_selected_profile_owns_actions_and_disconnect(self):
   self.connect();h=self.h;other=self.root/'other.sqlite';sqlite3.connect(other).close();self.invoke('connect');self.submit(choice='SQLite');self.submit(name='other',path=str(other));h.wait_jobs();self.invoke('open');profiles=h.active
   self.invoke('activate',profiles,['0']);h.wait_jobs();self.assertIn('ledger',h.views[h.active]['title']);self.invoke('back',h.active);self.assertEqual(h.active,profiles)
@@ -214,23 +250,20 @@ class RowActionTests(InteractiveTests):
   self.invoke('mode',databases,['0']);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()
   self.invoke('query',databases,['0']);buffer=list(h.buffers)[-1];h.buffers[buffer]='DELETE FROM items'
   self.invoke('run',buffer=buffer);self.invoke('activate',h.active,['0']);self.submit(confirmed=True);h.wait_jobs()
-  actions=h.views[databases]['rows'][0]['actions'];self.assertIn('commit',actions);self.assertIn('rollback',actions)
+  self.invoke('open');actions=h.views[databases]['rows'][0]['actions'];self.assertIn('commit',actions);self.assertIn('rollback',actions)
   self.invoke('rollback',databases,['0']);h.wait_jobs()
   self.assertNotIn('commit',h.views[databases]['rows'][0]['actions'])
 
 class PresentationTests(RowActionTests):
  features=['view-row-actions','view-action-presentation','view-metadata','view-document','job-feedback']
- def test_new_table_does_not_inherit_closed_parent_filters_or_page_size(self):
+ def test_new_table_does_not_inherit_previous_table_filters_or_page_size(self):
   with closing(sqlite3.connect(self.path)) as c:
    c.executescript("CREATE TABLE zother(other TEXT); INSERT INTO zother VALUES('first'),('second');")
   rows=self.rows();h=self.h
-  catalog=next(view for view,model in h.views.items() if model['title']=='[tables] ledger')
   self.invoke('filters',rows);filters=h.active;self.filter(filters,'name','equals','alpha')
   self.invoke('apply-filters',filters);h.wait_jobs()
   self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs()
-  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':catalog}})
-  self.invoke('back',rows);self.assertEqual(h.views[h.active]['title'],'[databases]')
-  self.invoke('activate',h.active,['0']);h.wait_jobs()
+  self.invoke('back',rows);self.assertEqual(h.views[h.active]['title'],'[tables] ledger')
   self.invoke('activate',h.active,['1']);h.wait_jobs();model=h.views[h.active]
   self.assertEqual(model['title'],'[rows] ledger › zother')
   self.assertEqual(model['columns'][0]['label'],'other')
@@ -239,11 +272,10 @@ class PresentationTests(RowActionTests):
 
  def test_record_number_keeps_browse_page_size_after_status_refresh(self):
   rows=self.rows();h=self.h
-  catalog=next(view for view,model in h.views.items() if model['title']=='[tables] ledger')
   self.invoke('page-size',rows);self.submit(size='1');h.wait_jobs()
   self.invoke('next',rows);h.wait_jobs();self.invoke('activate',rows,['0']);record=h.active
   self.assertEqual(h.views[record]['title'],'[record] ledger › items › row 2')
-  self.invoke('disconnect',catalog)
+  self.invoke('global-disconnect',record)
   self.assertEqual(h.views[record]['title'],'[record] ledger › items › row 2')
 
  def test_readable_discovery_metadata_identity_and_full_menu(self):

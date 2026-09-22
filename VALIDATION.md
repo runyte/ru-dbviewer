@@ -1,5 +1,30 @@
 # Validation register
 
+## Single browser buffer — 2026-09-22
+
+`App::create` now keeps bounded logical pages behind one native view. Foreground
+navigation republishes that view; background work updates its captured page and
+cannot retarget the current page. Back cancels and drains an outstanding full-value
+publication before reading the shared host revision, including when a staged
+commit already won. Returning from SQL can restore a large captured document
+through staging. Closing the browser drops history without settling transactions.
+
+Linux formatting, locked all-target Clippy, and the Rust suite passed with one
+Cargo job and one test thread. The 73 interactive tests, 11 full-value tests and
+17 wire tests passed. Regressions in `tests/interactive.py` cover repeated
+navigation without additional native views and SQL return; `tests/full_values.py`
+covers Back during staging, refused navigation and large-document return. The
+closed-publication cases in `tests/wire.py` inject failure after query admission
+and still verify transaction protection and explicit commit. Four additional
+wire cases verify selected-field restoration with a fresh selection revision.
+All ten native editor cases passed in the coordinated development tree, including
+Back immediately reopening the selected field after persistent reattachment.
+A reassociated SQL document takes its connection generation from its buffer
+association before consulting its retained navigation parent. The four
+`test_reassociated_sql_uses_current_connection_generation` wire variants failed
+before this correction and pass afterward. macOS and native PostgreSQL were not
+exercised in this check.
+
 ## PostgreSQL connection form rejection — 2026-09-21
 
 Choosing PostgreSQL after `::db` → Tab → Add database closed the picker without

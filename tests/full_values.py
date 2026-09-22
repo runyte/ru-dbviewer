@@ -41,6 +41,17 @@ class FullValueTests(unittest.TestCase):
   self.invoke('back',value);self.assertEqual(h.active,record)
   self.invoke('back',record);self.assertEqual(h.active,self.rows)
   self.assertFalse(h.leases)
+ def test_sql_return_restores_large_captured_document_in_same_buffer(self):
+  payload='x'*1500000;self.payload(payload)
+  value=self.full(self.record());h=self.h
+  self.invoke('global-query',value);buffer=next(reversed(h.buffers))
+  h.buffers[buffer]='SELECT 42'
+  self.invoke('run',buffer=buffer);h.wait_jobs()
+  self.assertNotIn('document',h.views[value])
+  self.invoke('return',buffer=buffer)
+  self.assertEqual(h.views[value]['document'],payload)
+  self.assertEqual(len(h.views),1)
+
  def test_preview_entry_stage_failure_and_retry_preserve_captured_source(self):
   payload='{"text":"'+('x'*150000)+'","end":"original"}';self.payload(payload)
   record=self.record();self.invoke('activate',record,['1']);preview=self.h.active;h=self.h
@@ -89,10 +100,25 @@ class FullValueTests(unittest.TestCase):
   self.invoke('raw',value);h.wait_jobs();self.assertEqual(h.views[value]['document'],'{"text":"'+'x'*100000+'"}')
  def test_setup_refusal_never_leaves_a_loading_view(self):
   self.payload('x'*100000);record=self.record();h=self.h
-  for method in ('job.create','view.create','pane.show'):
+  for method in ('job.create','view.publish','pane.show'):
    with self.subTest(method=method):
     before=set(h.views);h.fail_once=method;self.assertIn('error',h.invoke('show-full',record,['1']));h.wait_jobs()
-    self.assertEqual(set(h.views),before);self.assertFalse(any(state=='running' for state in h.jobs.values()))
+    self.assertEqual(set(h.views),before);self.assertIn('[record]',h.views[record]['title']);self.assertFalse(any(state=='running' for state in h.jobs.values()))
+ def test_back_during_full_load_does_not_replace_parent(self):
+  self.payload('x'*500000);record=self.record();h=self.h;navigation=[]
+  def navigate(method):
+   if method=='view.stage.write':
+    h.before_reply=None
+    h.serial+=1;navigation.append(f'h:{h.serial}')
+    h.send({'type':'request','id':f'h:{h.serial}','method':'command.invoke','params':{'command':'back','view':h.active,'model_revision':h.revisions[h.active],'rows':[]}})
+  h.before_reply=navigate
+  self.invoke('show-full',record,['1']);h.wait_jobs();self.good(h.until_reply(navigation[0]))
+  self.assertEqual(h.active,record)
+  self.assertIn('[record]',h.views[record]['title'])
+  self.assertNotIn('document',h.views[record])
+  self.assertEqual(len(h.views),1)
+  self.assertFalse(h.stages)
+
  def test_raw_control_whitespace_toggle_keeps_one_stable_title(self):
   payload='{"x":1,\r"y":2}';self.payload(payload);value=self.full(self.record());h=self.h
   original=h.views[value]['title'];self.assertIn('items',original)

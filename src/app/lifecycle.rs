@@ -239,17 +239,12 @@ impl App {
             tokio::time::sleep_until(view.published + Duration::from_millis(110)).await;
             let mut model = self.model_for_view(&done.view, &view.content);
             model["status"] = json!({"text":views::short(&error,1000),"role":"error"});
-            let result = self
-                .rpc
-                .request(
-                    "view.publish",
-                    json!({"view":done.view,"expected_revision":view.revision,"model":model}),
-                )
-                .await;
+            let result = self.publish_page_model(&done.view, model.clone()).await;
             if let Ok(r) = result
                 && let Some(v) = self.views.get_mut(&done.view)
             {
-                v.revision = string(&r, "revision")?;
+                v.revision = r;
+                v.model = model;
                 v.published = tokio::time::Instant::now();
             }
         }

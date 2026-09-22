@@ -46,7 +46,7 @@ class Host:
   environment={key:value for key,value in os.environ.items() if key not in excluded_env}
   self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0,env={**environment,'TMPDIR':directory,'XDG_CONFIG_HOME':str(Path(directory)/'config')})
   self.selector=selectors.DefaultSelector();self.selector.register(self.child.stdout,selectors.EVENT_READ)
-  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
+  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.selection_sets=[];self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
   self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();self.validator.validate(self.registration)
   self.commands={x['name']:x for x in self.registration['commands']}
   self.send({**REGISTERED,'runyte':'>=0.3.0, <0.4.0','capabilities':self.registration['required_capabilities'],'features':[f for f in self.features if f in self.registration['optional_features']]})
@@ -126,6 +126,9 @@ class Host:
   elif method=='buffer.snapshot.read':result={'text':self.snapshot[p['from']:p['to']]}
   elif method=='buffer.snapshot.close':pass
   elif method=='selection.get':result=self.selection
+  elif method=='selection.set':
+   assert p['buffer']==self.selection['buffer'];assert p['expected_revision']==self.selection['revision']
+   self.selection_sets.append(p);self.selection.update(ranges=p['ranges'],primary=p['primary']);result=self.selection
   elif method=='activity.acquire':id=f'l:{len(self.leases)+1}';self.leases[id]=p;result={'lease':id}
   elif method=='activity.release':self.leases.pop(p['lease'],None)
   else:raise AssertionError(method)
@@ -223,7 +226,9 @@ class WireTests(unittest.TestCase):
   for code in ('not_found','closed','cancelled'):
    with self.subTest(code=code):
     self.good(h.invoke('query'));b=list(h.buffers)[-1];h.buffers[b]='SELECT 42'
-    h.fail_once='view.publish';h.fail_code=code
+    def close_after_admission(method):
+     if method=='job.create':h.before_reply=None;h.fail_once='view.publish';h.fail_code=code
+    h.before_reply=close_after_admission
     self.good(h.invoke('run',buffer=b));h.wait_jobs()
     self.assertTrue(all(state=='succeeded' for state in h.jobs.values()))
  def test_closed_view_preserves_pending_write(self):
@@ -233,7 +238,9 @@ class WireTests(unittest.TestCase):
    with self.subTest(code=code):
     h.buffers[b]=f"INSERT INTO items VALUES({i+3}, 'retained')"
     self.good(h.invoke('run',buffer=b));self.good(h.invoke('activate',h.active,['0']))
-    h.fail_once='view.publish';h.fail_code=code
+    def close_after_admission(method):
+     if method=='job.create':h.before_reply=None;h.fail_once='view.publish';h.fail_code=code
+    h.before_reply=close_after_admission
     self.good(h.submit({'confirmed':True}));h.wait_jobs()
     self.assertTrue(h.leases);self.assertTrue(all(state=='succeeded' for state in h.jobs.values()))
     self.good(h.invoke('commit',buffer=b));h.wait_jobs();self.assertFalse(h.leases)

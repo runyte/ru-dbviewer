@@ -156,12 +156,7 @@ impl App {
         let result = self
             .load(&target, name.clone(), Some(table.clone()), 0, false, false)
             .await?;
-        self.rpc
-            .request(
-                "pane.show",
-                json!({"invocation":ctx["invocation"],"view":id}),
-            )
-            .await?;
+        self.show_page(ctx, id).await?;
         Ok(result)
     }
     pub(super) async fn browse_command(

@@ -56,6 +56,7 @@ pub enum Content {
     },
 }
 pub struct View {
+    pub position: Option<(String, Value)>,
     pub published: tokio::time::Instant,
     pub revision: String,
     pub content: Content,

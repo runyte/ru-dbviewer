@@ -151,6 +151,7 @@ impl App {
             self.views.get_mut(&view).unwrap().parent = parent;
         }
         let expected = self.views[&view].revision.clone();
+        let host_view = self.browser.as_ref().ok_or("Browser closed")?.view.clone();
         self.full_jobs
             .insert(view.clone(), (job.clone(), cancel.clone()));
         let rpc = self.rpc.clone();
@@ -184,9 +185,10 @@ impl App {
                 .and_then(|r| r);
             let (content, title, result) = match loaded {
                 Ok((document, encoded, title)) => {
-                    let result =
-                        stage_document(&rpc, &view, &expected, encoded, &guard, &cancel, deadline)
-                            .await;
+                    let result = stage_document(
+                        &rpc, &host_view, &expected, encoded, &guard, &cancel, deadline,
+                    )
+                    .await;
                     let mut content = loading;
                     if let Content::FullValue {
                         document: value, ..
@@ -239,6 +241,9 @@ impl App {
         let mut state = if cancelled { "cancelled" } else { "succeeded" };
         match done.result {
             Ok(revision) => {
+                if let Some(browser) = self.browser.as_mut().filter(|b| b.page == id) {
+                    browser.revision = revision.clone();
+                }
                 if current && let Some(view) = self.views.get_mut(&id) {
                     view.content = done.content;
                     view.revision = revision;
@@ -262,16 +267,10 @@ impl App {
                     model["title"] = view.model["title"].clone();
                     model["status"] = json!({"text":views::short(&crate::results::escape(&error),1000), "role":if cancelled {"muted"} else {"error"}});
                     tokio::time::sleep_until(view.published + Duration::from_millis(110)).await;
-                    if let Ok(result) = self
-                        .rpc
-                        .request(
-                            "view.publish",
-                            json!({"view":id,"expected_revision":done.expected,"model":model}),
-                        )
-                        .await
+                    if let Ok(result) = self.publish_page_model(&id, model.clone()).await
                         && let Some(view) = self.views.get_mut(&id)
                     {
-                        view.revision = string(&result, "revision")?;
+                        view.revision = result;
                         view.content = done.previous;
                         view.model = model;
                         view.published = tokio::time::Instant::now();
@@ -296,7 +295,7 @@ impl App {
     }
 }
 
-async fn stage_document(
+pub(super) async fn stage_document(
     rpc: &Rpc,
     view: &str,
     expected: &str,

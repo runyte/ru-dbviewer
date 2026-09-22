@@ -97,6 +97,7 @@ impl App {
         let generation = self.connections[&name].generation;
         let writable = self.connections[&name].writable;
         let text = crate::documents::initial(&name, writable, sql);
+        self.capture_page_position(ctx).await;
         for _ in 0..32 {
             self.query_serial = self
                 .query_serial

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+mod browser;
 mod browsing;
 mod commands;
 mod full_value;
@@ -246,6 +247,8 @@ pub struct App {
     state_revision: String,
     connections: HashMap<String, Connection>,
     views: HashMap<String, View>,
+    browser: Option<browser::Browser>,
+    page_serial: u64,
     buffers: HashMap<String, (String, u64)>,
     sources: HashMap<String, String>,
     query_labels: HashMap<String, String>,
@@ -362,6 +365,8 @@ impl App {
             state_revision: string(&saved, "revision")?,
             connections: HashMap::new(),
             views: HashMap::new(),
+            browser: None,
+            page_serial: 0,
             buffers: HashMap::new(),
             sources: HashMap::new(),
             query_labels: HashMap::new(),
@@ -400,10 +405,11 @@ impl App {
             tokio::select! {
              message=input.recv()=>{
               let Some(message)=message else{break;};
-              if message["type"]=="event" {if message["event"]=="view.closed" {let id=message["data"]["view"].as_str().unwrap_or("");app.views.remove(id);if let Some((_,cancel))=app.full_jobs.get(id){cancel.cancel();}}else if message["event"]=="activity.cancel_requested" {app.cancel_lease(message["data"]["lease"].as_str().unwrap_or("")).await?;}continue;}
+              if message["type"]=="event" {if message["event"]=="view.closed" {let id=message["data"]["view"].as_str().unwrap_or("");app.close_browser(id);}else if message["event"]=="activity.cancel_requested" {app.cancel_lease(message["data"]["lease"].as_str().unwrap_or("")).await?;}continue;}
               if message["type"]!="request"{continue;}
               if message["method"]=="ui.validate" { app.validate_form(&message); continue; }
               let id=string(&message,"id")?;let mut ctx=message["params"].clone();ctx["invocation"]=json!(id);
+              if message["method"]=="command.invoke" { app.resolve_browser_context(&mut ctx); }
               if message["method"]=="ui.submit" {
                 app.restore_input_source(&mut ctx);
                 match app.defer_path(&ctx) {Ok(true)=>continue,Ok(false)=>{},Err(e)=>{rpc.reply(&id,Err(e))?;continue;}}
@@ -619,9 +625,16 @@ impl App {
         model
     }
     async fn create(&mut self, ctx: &Value, content: Content) -> Result<String> {
-        if self.views.len() >= 12 {
-            return Err("Close a database view before opening another".into());
+        let origin = ctx;
+        let mut source_ctx = ctx.clone();
+        if !matches!(content, Content::Connections)
+            && !ctx["view"].is_string()
+            && let Some(source) = ctx["buffer"].as_str().and_then(|b| self.sources.get(b))
+            && self.views.contains_key(source)
+        {
+            source_ctx["view"] = json!(source);
         }
+        let ctx = &source_ctx;
         let parent = ctx["view"].as_str().and_then(|id| self.views.get(id));
         let model = self.model_context(&content, parent, parent.map(|v| &v.browse));
         let inherited_browse = if matches!(
@@ -637,32 +650,32 @@ impl App {
         } else {
             Default::default()
         };
-        let result = self
-            .rpc
-            .request("view.create", json!({"model":model}))
-            .await?;
-        let id = string(&result, "view")?;
+        self.page_serial += 1;
+        let id = format!("page:{}", self.page_serial);
         let connected_content = content.name().is_some();
         self.views.insert(
             id.clone(),
             View {
+                position: None,
                 published: tokio::time::Instant::now(),
-                revision: string(&result, "revision")?,
+                revision: format!("unpublished:{}", self.page_serial),
                 model,
                 content,
                 parent: ctx["view"].as_str().map(str::to_owned),
                 browse: inherited_browse,
                 generation: connected_content
                     .then(|| {
-                        ctx["view"]
+                        // An explicitly reassociated SQL buffer owns the new intent;
+                        // its navigation parent can still hold an older connection.
+                        ctx["buffer"]
                             .as_str()
-                            .and_then(|id| self.views.get(id))
-                            .and_then(|v| v.generation)
+                            .and_then(|id| self.buffers.get(id))
+                            .map(|(_, g)| *g)
                             .or_else(|| {
-                                ctx["buffer"]
+                                ctx["view"]
                                     .as_str()
-                                    .and_then(|id| self.buffers.get(id))
-                                    .map(|(_, g)| *g)
+                                    .and_then(|id| self.views.get(id))
+                                    .and_then(|v| v.generation)
                             })
                             .or_else(|| {
                                 self.target(ctx)
@@ -673,18 +686,12 @@ impl App {
                     .flatten(),
             },
         );
-        if let Err(error) = self
-            .rpc
-            .request(
-                "pane.show",
-                json!({"invocation":ctx["invocation"],"view":id}),
-            )
-            .await
-        {
+        if let Err(error) = self.show_page(origin, &id).await {
             self.views.remove(&id);
-            let _ = self.rpc.request("view.close", json!({"view":id})).await;
             return Err(error);
         }
+        // Only discard abandoned pages after the new page is accepted by the host.
+        self.prune_pages(Some(&id));
         Ok(id)
     }
     async fn publish(&mut self, id: &str, content: Content) -> Result<()> {
@@ -698,18 +705,11 @@ impl App {
             }
             return Ok(());
         }
-        tokio::time::sleep_until(view.published + Duration::from_millis(110)).await;
-        let result = self
-            .rpc
-            .request(
-                "view.publish",
-                json!({"view":id,"expected_revision":view.revision,"model":model}),
-            )
-            .await;
+        let result = self.publish_page_model(id, model.clone()).await;
         match result {
             Ok(v) => {
                 if let Some(view) = self.views.get_mut(id) {
-                    view.revision = string(&v, "revision")?;
+                    view.revision = v;
                     view.published = tokio::time::Instant::now();
                     view.content = content;
                     view.model = model;
@@ -790,12 +790,7 @@ impl App {
     }
     async fn back(&mut self, ctx: &Value, parent: Option<String>) -> Result<()> {
         if let Some(id) = parent.filter(|id| self.views.contains_key(id)) {
-            self.rpc
-                .request(
-                    "pane.show",
-                    json!({"invocation":ctx["invocation"],"view":id}),
-                )
-                .await?;
+            self.show_page(ctx, &id).await?;
         } else {
             self.create(ctx, Content::Connections).await?;
         }

@@ -95,8 +95,10 @@ Local acceptance is recorded in [VALIDATION.md](VALIDATION.md).
 5. Select a table row and press Enter, then Enter on a result row to inspect its
    fields, then Enter on a field to open its formatted preview. Metadata lines are
    not selectable database rows. `-` or **Tab → Back** returns through Value →
-   Record → Rows → Tables → Databases. Parents retain their cursor, viewport and
-   results; returning never replays SQL. If a parent closed, Back opens Databases.
+   Record → Rows → Tables → Databases. Navigation reuses one browser buffer, keeping up to twelve pages of captured
+   results in memory; returning never replays SQL. Opening a new branch drops
+   the abandoned forward pages. Field selections are restored on unchanged pages.
+   Closing the browser drops its history.
 6. Tab opens one searchable menu with relevant commands grouped under headings
    such as **Inspect**, **Navigation**, **Filter and sort**, **Columns and paging**,
    **Table**, **SQL**, **Database** and **Pending changes**. Headings are not actions.
@@ -147,6 +149,8 @@ The installation configuration binds `-` to back only in database views. Ordinar
 SQL buffers keep normal editing keys, including Tab. Aliases are independent of the plugin
 ID; full names are `:plugin.dbviewer.<local-name>`, such as
 `:plugin.dbviewer.run`. The catalog's mode action is `:plugin.dbviewer.mode`.
+
+Editable SQL documents remain separate from the shared browser buffer.
 
 New query buffers use `<profile>-query-YYYYMMDD-HHMMSS-nanoseconds-counter.sql`
 with local time and filename-safe profile names. Host collision checks and retries
@@ -245,8 +249,8 @@ closed on final-reference release, and disappear after process termination; no
 values go into profiles, query history or durable cache files. Limits are 8 MiB per
 complete textual representation, 32 MiB per result, 64 MiB and 32 result files per
 plugin process. An unavailable source retains its preview and explains why full
-inspection is unavailable. Close old database buffers to release retained sources
-or the twelve-view budget.
+inspection is unavailable. Starting another navigation branch releases abandoned
+pages and their sources; closing the browser releases its entire retained history.
 
 Full inspection requires negotiated `view-document` and `job-feedback` features
 of `runyte-1`. Older hosts retain previews and navigation without receiving new
