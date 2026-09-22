@@ -27,6 +27,7 @@ REGISTERED = next(x['message'] for x in FIXTURES if x['message']['type']=='regis
 class Host:
  def __init__(self, directory, version='0.3.0', features=(), excluded_env=()):
   self.features=list(features);schema=copy.deepcopy(SCHEMA)
+  if 'view-default-bindings' in features:schema['$defs']['command']['properties']['default_binding']={'type':'string','minLength':1,'maxLength':128}
   if 'input-path-completion' in features:schema['$defs']['inputField']['properties']['completion']=json.loads((ROOT/'fixtures/input-path-completion.json').read_text())
   if 'view-row-actions' in features:schema['$defs']['row']['properties']['actions']=json.loads((ROOT/'fixtures/view-row-actions.json').read_text())['row_actions']
   extension=json.loads((ROOT/'fixtures/view-presentation.json').read_text())

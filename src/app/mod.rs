@@ -301,6 +301,7 @@ impl App {
             "view-document",
             "job-feedback",
             "input-path-completion",
+            "view-default-bindings",
         ];
         let requested = known
             .iter()
@@ -309,7 +310,16 @@ impl App {
             .collect::<Vec<_>>();
         let presentation = requested.contains(&"view-action-presentation");
         let document = requested.contains(&"view-document") && requested.contains(&"job-feedback");
-        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":presentation::commands(presentation, document),"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":requested}))?;
+        let default_bindings = requested.contains(&"view-default-bindings");
+        let mut commands = presentation::commands(presentation, document);
+        if default_bindings {
+            for command in commands.as_array_mut().unwrap() {
+                if command["name"] == "back" {
+                    command["default_binding"] = json!("-");
+                }
+            }
+        }
+        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands,"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":requested}))?;
         let registered = tokio::time::timeout(Duration::from_secs(8), input.recv())
             .await
             .map_err(|_| "Registration timed out")?
@@ -332,6 +342,7 @@ impl App {
                 !f.as_str().is_some_and(|f| requested.contains(&f)) || features[..i].contains(f)
             })
             || (presentation && !features.iter().any(|f| f == "view-action-presentation"))
+            || (default_bindings && !features.iter().any(|f| f == "view-default-bindings"))
         {
             return Err("Invalid negotiated features".into());
         }

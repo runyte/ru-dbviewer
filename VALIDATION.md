@@ -1,5 +1,29 @@
 # Validation register
 
+## Default Back binding and final acceptance — 2026-09-22
+
+The plugin supplies `default_binding: "-"` for Back when the host advertises
+`view-default-bindings`. Explicit configured keys take precedence in Runyte.
+Legacy hosts receive no new registration field and still use the documented
+`bindings: {back: "-"}` configuration. This removes the configuration dependency
+for updated hosts without changing database-specific navigation. The reported
+macOS failure was not reproduced locally.
+
+Linux x86-64 passed formatting, locked all-target Clippy with warnings denied,
+43 Rust tests, 17 wire tests, 85 interactive tests, 11 full-value tests and all
+ten native PTY cases. Rust builds used one Cargo job and one test thread. The
+native suite used the coordinated Runyte debug host with the configured Back
+binding removed through `DBVIEWER_EXPECT_DEFAULT_BINDINGS=1`; both standalone
+and persistent navigation received the plugin default.
+
+Fresh combined line coverage is **87.36%** (5,683 of 6,505 lines), above the
+unchanged 75% floor. One earlier instrumented attempt exited during
+`test_callback_window_during_host_request`; three isolated repeats and the
+fresh complete run passed. Five PostgreSQL fixture tests remained ignored
+because server tools are not installed here. These results establish Linux
+SQLite/native-editor behavior, not native macOS or PostgreSQL acceptance.
+The ordinary debug plugin was rebuilt after coverage.
+
 ## Single browser buffer — 2026-09-22
 
 `App::create` now keeps bounded logical pages behind one native view. Foreground

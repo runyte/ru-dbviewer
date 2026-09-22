@@ -145,7 +145,11 @@ APIs are not supported; an already established external tunnel can be used.
 | `::db-return` | Return from SQL to its source browsing view, or Databases if closed |
 | `::db-transactions` | Inspect and settle pending transactions across connected databases |
 
-The installation configuration binds `-` to back only in database views. Ordinary
+On hosts supporting `view-default-bindings`, the plugin supplies `-` for Back
+automatically in database views. Explicit configured bindings override this default.
+The installation configuration also includes `bindings: {back: "-"}` for older
+hosts; add it to existing configurations on those hosts and restart Runyte, including
+its persistent host. `:plugin-restart` does not reload configuration. Ordinary
 SQL buffers keep normal editing keys, including Tab. Aliases are independent of the plugin
 ID; full names are `:plugin.dbviewer.<local-name>`, such as
 `:plugin.dbviewer.run`. The catalog's mode action is `:plugin.dbviewer.mode`.
@@ -312,6 +316,10 @@ python3 tests/interactive.py
 PG_BIN=/path/to/postgresql/bin python3 scripts/postgres_tests.py
 RUNYTE_BIN=/path/to/current/runyte DBVIEWER_EXPECT_ROW_ACTIONS=1 DBVIEWER_EXPECT_FULL_VALUES=1 python3 tests/native.py
 ```
+
+With a host supporting `view-default-bindings`, set
+`DBVIEWER_EXPECT_DEFAULT_BINDINGS=1` for native tests to remove the configured
+Back binding and verify the plugin default.
 
 The wire tests need Python's `jsonschema` package, only during development. Native
 PostgreSQL tests need the server tools and `openssl`; they create and remove a

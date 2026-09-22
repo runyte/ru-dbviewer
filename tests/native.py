@@ -22,7 +22,10 @@ import unittest
 
 def configuration():
     binary = Path(os.environ.get("DBVIEWER_BIN", Path(__file__).resolve().parents[1]/"target/debug/ru-dbviewer")).resolve()
-    return json.loads(subprocess.check_output([str(binary), "--print-config"], text=True))
+    config = json.loads(subprocess.check_output([str(binary), "--print-config"], text=True))
+    if os.environ.get("DBVIEWER_EXPECT_DEFAULT_BINDINGS") == "1":
+        config["plugins"][0].pop("bindings", None)
+    return config
 
 
 CONTROL = re.compile(rb"\x1b\[([0-?]*)[ -/]*([@-~])")

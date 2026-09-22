@@ -62,6 +62,13 @@ class InteractiveTests(unittest.TestCase):
   self.invoke('return',buffer=buffer);self.assertIn('[rows]',h.views[rows]['title'])
   self.assertEqual(h.requests.count('view.create'),1)
 
+ def test_back_default_binding_is_negotiated(self):
+  if 'view-default-bindings' in getattr(self,'features',()):
+   self.assertEqual(self.h.commands['back']['default_binding'],'-')
+  else:
+   self.assertNotIn('default_binding',self.h.commands['back'])
+  self.assertTrue(all('default_binding' not in c for name,c in self.h.commands.items() if name!='back'))
+
  def test_postgres_form_and_password_handoff(self):
   self.invoke('open');self.invoke('connect-new',self.h.active);self.submit(choice='PostgreSQL')
   form=list(self.h.inputs.values())[-1]
@@ -255,7 +262,7 @@ class RowActionTests(InteractiveTests):
   self.assertNotIn('commit',h.views[databases]['rows'][0]['actions'])
 
 class PresentationTests(RowActionTests):
- features=['view-row-actions','view-action-presentation','view-metadata','view-document','job-feedback']
+ features=['view-row-actions','view-action-presentation','view-metadata','view-document','job-feedback','view-default-bindings']
  def test_new_table_does_not_inherit_previous_table_filters_or_page_size(self):
   with closing(sqlite3.connect(self.path)) as c:
    c.executescript("CREATE TABLE zother(other TEXT); INSERT INTO zother VALUES('first'),('second');")
