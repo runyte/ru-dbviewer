@@ -172,7 +172,8 @@ opens exactly **READ ONLY** and **READ AND WRITE**, with the current choice in t
 title. Switching to writable requires confirmation; read-only does not. Pending
 changes must be committed or rolled back before choosing another mode. Reconnect
 invalidates previous SQL associations: use `::db-use` again. Every writable run first opens an immutable
-SQL review buffer. Select its SQL row, press Enter, and confirm execution.
+SQL review buffer with the captured line breaks preserved. Select any SQL row,
+press Enter, and confirm execution.
 Editing the original buffer after capture does not change the reviewed statement.
 
 Successful writable execution leaves a **PENDING COMMIT** transaction. Explicitly

@@ -142,10 +142,17 @@ impl Content {
             Self::Review {
                 name, sql, source, ..
             } => {
-                let rows=sql.chars().collect::<Vec<_>>().chunks(1024).enumerate().map(|(i,chunk)|json!({"id":i.to_string(),"text":escape(&chunk.iter().collect::<String>()),"role":"ordinary"})).collect();
+                let rows = sql.split('\n').flat_map(|line| {
+                    let chars = line.chars().collect::<Vec<_>>();
+                    if chars.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chars.chunks(1024).map(|chunk| chunk.iter().collect::<String>()).collect()
+                    }
+                }).enumerate().map(|(i, line)| json!({"id":i.to_string(),"text":escape(&line),"role":"ordinary"})).collect();
                 text_model(
                     &format!("{name} · captured SQL"),
-                    &format!("Enter to confirm execution · {source} · controls are escaped"),
+                    &format!("Enter to confirm execution · {source} · other controls are escaped"),
                     rows,
                     &["activate"],
                 )
