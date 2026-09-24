@@ -159,6 +159,7 @@ impl App {
         let j = job.clone();
         let presentation = self.action_presentation;
         let metadata = self.view_metadata;
+        let help = self.view_help;
         tokio::spawn(async move {
             // The slot stays owned through the blocking read, even after cancellation.
             let _permit = permit;
@@ -168,7 +169,11 @@ impl App {
             let loaded =
                 tokio::task::spawn_blocking(move || -> Result<(Arc<Document>, String, String)> {
                     let document = Arc::new(Document::load(&cell, raw, &worker_guard)?);
-                    let model = document.model(&title, presentation, metadata);
+                    let mut model = document.model(&title, presentation, metadata);
+                    if help {
+                        // A complete value is the same page as its preview.
+                        model["help"] = json!(super::help::VALUE);
+                    }
                     let encoded = serde_json::to_string(&model)
                         .map_err(|_| "Cannot encode complete value")?;
                     if encoded.len() > crate::full_value::MAX_MODEL {

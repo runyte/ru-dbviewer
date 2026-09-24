@@ -366,6 +366,9 @@ impl App {
             }
             model["action_presentation"]["activate"] = primary_action;
         }
+        if self.view_help {
+            model["help"] = json!(super::help::topic(content));
+        }
         if self.view_metadata {
             model["metadata"] = json!(entries);
         } else if !entries.is_empty() {

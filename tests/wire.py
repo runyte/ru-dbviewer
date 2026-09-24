@@ -41,6 +41,11 @@ class Host:
    for name in ('model','viewHeader'):schema['$defs'][name]['properties']['document']={'type':'string','maxLength':8388608}
    schema['$defs']['view.stage.open']['properties']['params']['properties']['bytes']['maximum']=16777216
    schema['$defs']['view.stage.write']['properties']['params']['properties']['offset']['maximum']=16777216
+  if 'view-help' in features:
+   extension_help=json.loads((ROOT/'fixtures/view-help.json').read_text())
+   schema['$defs']['helpTopic']=extension_help['helpTopic']
+   schema['$defs']['register']['properties']['help_topics']=extension_help['help_topics']
+   for name in ('model','viewHeader'):schema['$defs'][name]['properties']['help']=extension_help['help']
   if 'job-feedback' in features:schema['$defs']['job.finish']['properties']['params']['properties']['message']={'type':'string','minLength':1,'maxLength':1024}
   self.model_validator=Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/model'})
   self.validator=Draft202012Validator({**schema,'anyOf':[{'$ref':'#/$defs/pluginMessage'}]})

@@ -425,6 +425,24 @@ class NativeTests(unittest.TestCase):
             editor.send(b"-")
             editor.wait_for(lambda: editor.shows("[rows]") and not editor.shows("name [TEXT]"))
 
+    @unittest.skipUnless(os.environ.get("DBVIEWER_EXPECT_VIEW_HELP") == "1",
+                         "requires a host with view-help")
+    def test_space_question_explains_the_current_page(self):
+        with NativeEditor(self) as editor:
+            self.connect(editor)
+            editor.open_row("main.items", "[rows]")
+            editor.present(b" ?", "DATABASE VIEWER · ROWS")
+            self.assertTrue(editor.shows("one page of a table"), editor.screen.text())
+            # The host lists the live menu below the prose, labels and groups
+            # included; this row appears nowhere else.
+            editor.find("Page size — Set browse page size")
+            editor.wait_for(lambda: editor.shows("Columns and paging"))
+            editor.send(b"q")
+            editor.wait_for(lambda: editor.shows("[rows]"))
+            editor.open_row("native-first", "[record]")
+            editor.present(b" ?", "DATABASE VIEWER · RECORD")
+            self.assertFalse(editor.shows("one page of a table"), editor.screen.text())
+
     @unittest.skipUnless(os.environ.get("DBVIEWER_EXPECT_PATH_COMPLETION") == "1",
                          "requires a host with input-path-completion")
     def test_native_live_path_completion_and_short_labels(self):

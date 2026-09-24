@@ -315,6 +315,25 @@ class PresentationTests(RowActionTests):
   self.invoke('raw',h.active)
   self.assertEqual(h.views[h.active]['action_presentation']['raw']['label'],'Show formatted value')
 
+class HelpTests(PresentationTests):
+ features=PresentationTests.features+['view-help']
+ def test_each_page_names_a_registered_help_topic(self):
+  h=self.h;topics={t['id']:t for t in h.registration['help_topics']}
+  self.assertEqual(set(topics),{'databases','tables','rows','record','value','schema','filters','review','transactions'})
+  rows=self.rows()
+  self.assertEqual(h.views[rows]['help'],'rows')
+  self.invoke('activate',rows,['0']);self.assertEqual(h.views[rows]['help'],'record')
+  self.invoke('activate',rows,['2']);self.assertIn('[value]',h.views[rows]['title']);self.assertEqual(h.views[rows]['help'],'value')
+  self.invoke('back',rows);self.invoke('back',rows);self.invoke('back',rows)
+  self.assertIn('[tables]',h.views[rows]['title']);self.assertEqual(h.views[rows]['help'],'tables')
+  self.invoke('schema',rows,['0']);h.wait_jobs();self.assertIn('[schema]',h.views[h.active]['title']);self.assertEqual(h.views[h.active]['help'],'schema')
+  for view in h.views.values():self.assertIn(view['help'],topics)
+
+ def test_older_hosts_receive_no_help(self):
+  self.assertNotIn('help_topics',PresentationTests.features)
+  older=Host(self.tmp.name,features=PresentationTests.features);self.addCleanup(older.close)
+  self.assertNotIn('help_topics',older.registration)
+
 class PathCompletionTests(InteractiveTests):
  features=('input-path-completion',)
 

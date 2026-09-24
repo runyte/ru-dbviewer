@@ -1,5 +1,31 @@
 # Validation register
 
+## Contextual help topics — 2026-09-24
+
+On hosts advertising `view-help`, registration sends nine workflow topics:
+Databases, Tables, Rows, Record, Value, Schema, Filters, Review and
+Transactions. Every browser model, including loaded complete values, names the
+topic for its page. Runyte's `Space ?` renders that prose, then generates the
+page's Tab actions and keys from its live registry. The topics therefore carry
+no action or key tables. Older hosts receive no new registration field, and a
+host that drops the feature from its acknowledgement is refused.
+
+Linux x86-64 passed formatting, locked all-target Clippy with warnings denied,
+44 Rust tests, 17 wire tests, 111 interactive tests, 11 full-value tests and all
+13 native PTY cases. The interactive `HelpTests` rerun the presentation suite
+with `view-help` and validate each model against the retained extension schema.
+The native suite used the coordinated Runyte debug host with
+`DBVIEWER_EXPECT_VIEW_HELP`, `DBVIEWER_EXPECT_DEFAULT_BINDINGS`,
+`DBVIEWER_EXPECT_PATH_COMPLETION` and `DBVIEWER_EXPECT_FULL_VALUES` set; its
+first run found and confirmed the host's registration-envelope fix.
+
+Fresh combined line coverage is **87.59%** (5,751 of 6,566 lines), above the
+unchanged 75% floor. PostgreSQL tests did not run because server tools are not
+installed here. CI's pinned host predates `view-help`, so its native help case
+skips until that pin moves. These results establish Linux SQLite/native-editor
+behavior, not native macOS or PostgreSQL acceptance. The ordinary debug plugin
+was rebuilt after coverage.
+
 ## Default Back binding and final acceptance — 2026-09-22
 
 The plugin supplies `default_binding: "-"` for Back when the host advertises

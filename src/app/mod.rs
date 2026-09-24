@@ -3,6 +3,7 @@ mod browser;
 mod browsing;
 mod commands;
 mod full_value;
+mod help;
 mod input;
 mod lifecycle;
 mod presentation;
@@ -269,6 +270,7 @@ pub struct App {
     view_metadata: bool,
     path_completion: bool,
     document_views: bool,
+    view_help: bool,
     full_slots: Arc<tokio::sync::Semaphore>,
     full_jobs: HashMap<String, (String, CancellationToken)>,
 }
@@ -302,6 +304,7 @@ impl App {
             "job-feedback",
             "input-path-completion",
             "view-default-bindings",
+            "view-help",
         ];
         let requested = known
             .iter()
@@ -319,7 +322,13 @@ impl App {
                 }
             }
         }
-        rpc.send(json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands,"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":requested}))?;
+        let mut registration = json!({"type":"register","version":"runyte-1","name":"Database viewer","runyte":HOST_RANGE,"commands":commands,"required_capabilities":CAPABILITIES,"optional_capabilities":[],"required_features":[],"optional_features":requested});
+        // Older hosts refuse the field, so it goes only where hello offered it.
+        let help_topics = requested.contains(&"view-help");
+        if help_topics {
+            registration["help_topics"] = help::topics();
+        }
+        rpc.send(registration)?;
         let registered = tokio::time::timeout(Duration::from_secs(8), input.recv())
             .await
             .map_err(|_| "Registration timed out")?
@@ -343,6 +352,7 @@ impl App {
             })
             || (presentation && !features.iter().any(|f| f == "view-action-presentation"))
             || (default_bindings && !features.iter().any(|f| f == "view-default-bindings"))
+            || (help_topics && !features.iter().any(|f| f == "view-help"))
         {
             return Err("Invalid negotiated features".into());
         }
@@ -350,6 +360,7 @@ impl App {
         let action_presentation = features.iter().any(|f| f == "view-action-presentation");
         let view_metadata = features.iter().any(|f| f == "view-metadata");
         let path_completion = features.iter().any(|f| f == "input-path-completion");
+        let view_help = features.iter().any(|f| f == "view-help");
         let document_views = features.iter().any(|f| f == "view-document")
             && features.iter().any(|f| f == "job-feedback");
         let saved = rpc.request("state.get", json!({})).await?;
@@ -398,6 +409,7 @@ impl App {
             view_metadata,
             path_completion,
             document_views,
+            view_help,
             full_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             full_jobs: HashMap::new(),
         };

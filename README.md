@@ -107,6 +107,11 @@ Local acceptance is recorded in [VALIDATION.md](VALIDATION.md).
    Pending Commit/Roll back actions retain their confirmations and connection checks.
    Record/value menus focus on inspection and navigation; global `db-*` aliases
    keep database lifecycle commands available. Back never disconnects.
+   On hosts supporting `view-help`, `Space ?` explains the current page:
+   Databases, Tables, Rows, Record, Value, Schema, Filters, Review or
+   Transactions. Runyte lists that page's Tab actions and keys below the
+   explanation from the same registry as the menu. Older hosts keep their generic
+   text help.
 7. **Tab → Show full value**, from a selected record field or its preview, loads
    the complete captured value into one read-only document. Normal search,
    selections and copying cover all its text. **Show raw text** / **Format JSON**
@@ -320,6 +325,8 @@ RUNYTE_BIN=/path/to/current/runyte DBVIEWER_EXPECT_ROW_ACTIONS=1 DBVIEWER_EXPECT
 With a host supporting `view-default-bindings`, set
 `DBVIEWER_EXPECT_DEFAULT_BINDINGS=1` for native tests to remove the configured
 Back binding and verify the plugin default.
+With a host supporting `view-help`, set `DBVIEWER_EXPECT_VIEW_HELP=1` to verify
+that `Space ?` opens page-specific help in the real editor.
 
 The wire tests need Python's `jsonschema` package, only during development. Native
 PostgreSQL tests need the server tools and `openssl`; they create and remove a
