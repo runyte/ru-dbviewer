@@ -52,7 +52,7 @@ class Host:
   environment={key:value for key,value in os.environ.items() if key not in excluded_env}
   self.child=subprocess.Popen([BINARY],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=directory,bufsize=0,env={**environment,'TMPDIR':directory,'XDG_CONFIG_HOME':str(Path(directory)/'config')})
   self.selector=selectors.DefaultSelector();self.selector.register(self.child.stdout,selectors.EVENT_READ)
-  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.selection_sets=[];self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None
+  self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.selection_sets=[];self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None;self.published={}
   self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();self.validator.validate(self.registration)
   self.commands={x['name']:x for x in self.registration['commands']}
   self.send({**REGISTERED,'runyte':'>=0.3.0, <0.4.0','capabilities':self.registration['required_capabilities'],'features':[f for f in self.features if f in self.registration['optional_features']]})
@@ -89,6 +89,11 @@ class Host:
   result={};error=None
   if method==self.fail_once:
    self.fail_once=None;self.send({'type':'response','id':msg['id'],'error':{'code':self.fail_code,'message':'fixture rejection'}});return
+  # Like Runyte, refuse a second publication of one view within 100 ms.
+  if method in('view.publish','view.stage.commit') and not self.cancel_commit:
+   view=p['view'] if method=='view.publish' else self.stages.get(p['stage'],{}).get('view')
+   if view in self.published and time.monotonic()-self.published[view]<0.1:
+    self.send({'type':'response','id':msg['id'],'error':{'code':'busy','message':'View publication is paced at ten updates per second'}});return
   if method=='state.get':result=self.state
   elif method=='state.set':assert p['expected_revision']==self.state['revision'];self.state={'revision':'s:'+'a'*64,'document':p['document']};result={'revision':self.state['revision']}
   elif method=='settings.get':result={'settings':{}}
@@ -100,7 +105,7 @@ class Host:
   elif method=='view.publish':
    assert p['expected_revision']==self.revisions[p['view']]
    for action in p['model'].get('actions',[]):assert self.commands[action]['context']=='view',action
-   self.views[p['view']]=p['model'];self.revisions[p['view']]=f'm:{int(self.revisions[p["view"]].split(":")[1])+1}';result={'view':p['view'],'revision':self.revisions[p['view']]}
+   self.views[p['view']]=p['model'];self.revisions[p['view']]=f'm:{int(self.revisions[p["view"]].split(":")[1])+1}';result={'view':p['view'],'revision':self.revisions[p['view']]};self.published[p['view']]=time.monotonic()
   elif method=='view.stage.open':
    assert p['kind']=='model';assert p['expected_revision']==self.revisions[p['view']]
    self.stage_serial+=1;stage=f'st:{self.stage_serial}';self.stages[stage]={'view':p['view'],'revision':p['expected_revision'],'bytes':p['bytes'],'data':bytearray()};result={'stage':stage,'bytes':p['bytes']}
@@ -115,7 +120,7 @@ class Host:
    if self.revisions.get(view)!=stage['revision']:
     self.send({'type':'response','id':msg['id'],'error':{'code':'conflict','message':'fixture revision changed'}});return
    for action in model.get('actions',[]):assert self.commands[action]['context']=='view'
-   self.views[view]=model;self.revisions[view]=f'm:{int(self.revisions[view].split(":")[1])+1}';result={'view':view,'revision':self.revisions[view]}
+   self.views[view]=model;self.revisions[view]=f'm:{int(self.revisions[view].split(":")[1])+1}';result={'view':view,'revision':self.revisions[view]};self.published[view]=time.monotonic()
   elif method=='view.stage.close':
    self.stages.pop(p['stage'],None)
    if self.pending_commit and self.pending_commit['params']['stage']==p['stage']:

@@ -151,7 +151,11 @@ impl App {
             self.views.get_mut(&view).unwrap().parent = parent;
         }
         let expected = self.views[&view].revision.clone();
-        let host_view = self.browser.as_ref().ok_or("Browser closed")?.view.clone();
+        let browser = self.browser.as_ref().ok_or("Browser closed")?;
+        let host_view = browser.view.clone();
+        // The loading page was just published; the host refuses another
+        // publication of the same view within 100 ms with `busy`.
+        let paced = browser.published + Duration::from_millis(110);
         self.full_jobs
             .insert(view.clone(), (job.clone(), cancel.clone()));
         let rpc = self.rpc.clone();
@@ -190,6 +194,11 @@ impl App {
                 .and_then(|r| r);
             let (content, title, result) = match loaded {
                 Ok((document, encoded, title)) => {
+                    // A small value loads well inside the pacing interval.
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(paced) => {}
+                        _ = cancel.cancelled() => {}
+                    }
                     let result = stage_document(
                         &rpc, &host_view, &expected, encoded, &guard, &cancel, deadline,
                     )
@@ -248,6 +257,8 @@ impl App {
             Ok(revision) => {
                 if let Some(browser) = self.browser.as_mut().filter(|b| b.page == id) {
                     browser.revision = revision.clone();
+                    // The committed document restarts the host's pacing interval.
+                    browser.published = tokio::time::Instant::now();
                 }
                 if current && let Some(view) = self.views.get_mut(&id) {
                     view.content = done.content;

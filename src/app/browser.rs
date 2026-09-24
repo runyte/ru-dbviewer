@@ -6,7 +6,7 @@ pub(super) struct Browser {
     pub view: String,
     pub revision: String,
     pub page: String,
-    published: tokio::time::Instant,
+    pub published: tokio::time::Instant,
 }
 
 impl App {
