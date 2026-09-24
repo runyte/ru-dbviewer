@@ -119,7 +119,7 @@ impl Rpc {
         let mut wake = &self.0.wake;
         let _ = wake.write(&[1]);
         let _ = self.0.output.try_send(Vec::new());
-        for (_, token) in self.0.cancelled.lock().unwrap().iter() {
+        for token in self.0.cancelled.lock().unwrap().values() {
             token.cancel();
         }
         self.0.pending.lock().unwrap().clear();
