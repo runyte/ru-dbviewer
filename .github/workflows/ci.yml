@@ -62,7 +62,8 @@ jobs:
       - name: Behavior coverage (Rust, wire, PostgreSQL, native editor)
         shell: bash
         run: |
-          source <(cargo llvm-cov show-env --sh)
+          cargo llvm-cov show-env --sh > "$RUNNER_TEMP/dbviewer-coverage-env.sh"
+          source "$RUNNER_TEMP/dbviewer-coverage-env.sh"
           cargo clean -p ru-dbviewer
           cargo test --locked
           python tests/wire.py

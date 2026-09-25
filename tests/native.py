@@ -19,6 +19,7 @@ import termios
 import time
 import unicodedata
 import unittest
+from unittest.mock import patch
 
 def configuration():
     binary = Path(os.environ.get("DBVIEWER_BIN", Path(__file__).resolve().parents[1]/"target/debug/ru-dbviewer")).resolve()
@@ -103,7 +104,10 @@ class NativeEditor:
     """A real PTY and optionally retained host, with all state below one temp root."""
     def __init__(self, test, *, persistent=False):
         self.test, self.persistent = test, persistent
-        self.temporary = tempfile.TemporaryDirectory()
+        # Keep the canonical workspace socket path short on Linux and macOS.
+        # Darwin's default /var/folders TMPDIR can exceed the host's limit once
+        # our project/.runyte/host/workspace.sock suffix is appended.
+        self.temporary = tempfile.TemporaryDirectory(prefix="dbv-", dir="/tmp")
         self.root = Path(self.temporary.name)
         self.project = self.root / "project"
         self.project.mkdir()
@@ -647,12 +651,18 @@ class NativeTests(unittest.TestCase):
             editor.wait_for(lambda: editor.shows("[record]") and editor.shows("name [TEXT]"))
 
     def test_persistent_detach_and_reattach(self):
-        with NativeEditor(self, persistent=True) as editor:
-            self.connect(editor)
-            editor.detach()
-            editor.attach()
-            editor.wait_for(lambda: editor.shows("main.items"))
-            editor.open_row("main.items", "native-first")
+        # macOS runners have long temporary paths. Exercise that constraint on
+        # every platform, including Python's cached choice of temporary directory.
+        with tempfile.TemporaryDirectory() as directory:
+            long_temp = Path(directory) / ("long-temp-" * 12)
+            long_temp.mkdir()
+            with patch.dict(os.environ, TMPDIR=str(long_temp)), patch("tempfile.tempdir", str(long_temp)):
+                with NativeEditor(self, persistent=True) as editor:
+                    self.connect(editor)
+                    editor.detach()
+                    editor.attach()
+                    editor.wait_for(lambda: editor.shows("main.items"))
+                    editor.open_row("main.items", "native-first")
 
 if __name__ == "__main__":
     if not os.environ.get("RUNYTE_BIN"):

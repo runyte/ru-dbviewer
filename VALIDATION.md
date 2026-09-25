@@ -1,5 +1,38 @@
 # Validation register
 
+## macOS native fixture paths and coverage setup — 2026-09-25
+
+CI run [36106262496](https://github.com/runyte/ru-dbviewer/actions/runs/36106262496)
+failed both macOS jobs because persistent native fixtures placed
+`project/.runyte/host/workspace.sock` beneath the runner's long `/var/folders`
+temporary directory. Runyte rejected the canonical socket path before attachment.
+`NativeEditor` now creates its private temporary root directly under `/tmp`
+(`/private/tmp` after macOS canonicalization). Configuration, databases, host
+inventory and runtime state still live beneath that root and are cleaned up.
+The existing detach/reattach test now sets both `TMPDIR` and Python's cached
+temporary directory to a deliberately long path. On Linux with the CI-pinned
+host, this regression failed with the same socket-path error before the fixture
+fix and passed afterward.
+
+Both macOS logs also contained `Broken pipe` from coverage environment setup.
+CI now writes `cargo llvm-cov show-env --sh` to a completed file before sourcing
+it. This avoids sourcing a live process-substitution pipe and makes a failed
+export command fail the step before tests start. The 75% coverage floor is
+unchanged, and the reproduction commands below use the same approach.
+
+Local Linux x86-64 validation passed with Rust 1.90.0 and Python 3.14.7:
+`cargo fmt --check`, locked all-target Clippy with warnings denied, 45 ordinary
+Rust tests (including 11 SQLite database cases), 17 public-wire tests, 111
+interactive tests and 11 full-value tests. Native PTY acceptance against host
+`cd711f294716a52a800d701016374026036c9b71` ran 11 tests: seven passed and four
+requiring newer host features skipped. Fresh combined LLVM line coverage was
+**87.67%** (5,793 of 6,608 lines), above the unchanged 75% floor. Python parsing,
+workflow YAML parsing and coverage-step Bash syntax checks also passed.
+PostgreSQL's five fixture cases were not run locally because server tools are
+not installed. macOS and ARM64 were not exercised locally; the next CI run must
+confirm those platforms with the fix. The ordinary debug plugin was rebuilt
+after coverage. Subagent implementation review found no actionable issues.
+
 ## Output queue under a full request window — 2026-09-25
 
 CI intermittently failed `test_callback_window_during_host_request` with
@@ -346,7 +379,10 @@ Use a disposable database fixture; never point these tests at personal data.
 
 ```sh
 cargo llvm-cov clean --profraw-only
-source <(cargo llvm-cov show-env --sh)
+coverage_env=$(mktemp)
+cargo llvm-cov show-env --sh > "$coverage_env"
+source "$coverage_env"
+rm "$coverage_env"
 cargo clean -p ru-dbviewer
 cargo test --locked
 cargo build --locked
