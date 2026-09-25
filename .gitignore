@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 /default.profraw
 /.runyte/
+/resources/sample.sqlite
