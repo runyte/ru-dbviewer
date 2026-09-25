@@ -294,7 +294,7 @@ class PresentationTests(RowActionTests):
   self.invoke('open');self.assertEqual(h.views[h.active]['title'],'[databases]')
   catalog=self.connect();model=h.views[catalog]
   self.assertEqual(model['title'],'[tables] ledger')
-  self.assertIn({'label':'Database path','value':str(self.path)},model['metadata'])
+  self.assertIn({'label':'Database path','value':str(self.path.resolve())},model['metadata'])
   self.assertNotIn('detail',model)
   self.invoke('activate',catalog,['0']);h.wait_jobs();rows=h.active;model=h.views[rows]
   self.assertEqual(model['title'],'[rows] ledger › items')

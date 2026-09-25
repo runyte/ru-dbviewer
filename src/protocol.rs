@@ -31,6 +31,17 @@ fn write_fd(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     }
 }
 pub const FRAME: usize = 1024 * 1024;
+// Host requests the plugin may be asked to answer at once (the host window).
+const HOST_WINDOW: usize = 16;
+// Plugin requests awaiting a host response.
+const PLUGIN_WINDOW: usize = 12;
+// Every admitted reply and request fits without waiting for the writer thread,
+// which may not be scheduled between replies under load. The headroom holds
+// registration, the stop sentinel and up to two late path-validation replies
+// (`path_slots`) that the host retired from its window at their deadline.
+// FRAME bounds queued output to 32 MiB; a real stall is detected by the
+// writer's per-frame pipe deadline.
+const OUTPUT_QUEUE: usize = HOST_WINDOW + PLUGIN_WINDOW + 4;
 type Reply = oneshot::Sender<Result<Value>>;
 struct Inner {
     output: mpsc::SyncSender<Vec<u8>>,
@@ -51,7 +62,7 @@ impl Rpc {
             UnixStream::pair().map_err(|_| "Cannot create transport wake channel")?;
         wake.set_nonblocking(true)
             .map_err(|_| "Cannot configure wake channel")?;
-        let (out, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+        let (out, rx) = mpsc::sync_channel::<Vec<u8>>(OUTPUT_QUEUE);
         // Host requests (16) plus closed views (12), two activity leases, and
         // lifecycle headroom. Events do not consume the host request window.
         // FRAME bounds encoded queued input to 40 MiB. Responses and immediate
@@ -66,7 +77,7 @@ impl Rpc {
             serial: AtomicU64::new(0),
             request_order: Mutex::new(()),
             stopped: AtomicBool::new(false),
-            slots: Semaphore::new(12),
+            slots: Semaphore::new(PLUGIN_WINDOW),
         }));
         let reader = rpc.clone();
         std::thread::spawn(move || {
@@ -375,5 +386,41 @@ mod tests {
         }
         reader.join().unwrap();
         assert!(rpc.0.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_request_windows_queue_without_a_scheduled_writer() {
+        let (wake, _peer) = UnixStream::pair().unwrap();
+        // The receiver is never drained, as when the writer thread is not scheduled.
+        let (output, _receiver) = mpsc::sync_channel(OUTPUT_QUEUE);
+        let rpc = Rpc(Arc::new(Inner {
+            output,
+            wake,
+            pending: Mutex::new(HashMap::new()),
+            cancelled: Mutex::new(HashMap::new()),
+            early: Mutex::new(Vec::new()),
+            serial: AtomicU64::new(0),
+            request_order: Mutex::new(()),
+            stopped: AtomicBool::new(false),
+            slots: Semaphore::new(PLUGIN_WINDOW),
+        }));
+        let mut requests = tokio::task::JoinSet::new();
+        for _ in 0..PLUGIN_WINDOW {
+            let rpc = rpc.clone();
+            requests.spawn(async move { rpc.request("fixture", json!({})).await });
+        }
+        while rpc.0.pending.lock().unwrap().len() < PLUGIN_WINDOW {
+            assert!(!rpc.closed());
+            tokio::task::yield_now().await;
+        }
+        for i in 0..HOST_WINDOW {
+            rpc.reply(&format!("h:{i}"), Err("Unsupported host method".into()))
+                .unwrap();
+        }
+        assert!(!rpc.closed());
+        rpc.stop();
+        while let Some(result) = requests.join_next().await {
+            assert!(result.unwrap().is_err());
+        }
     }
 }

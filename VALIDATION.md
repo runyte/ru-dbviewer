@@ -1,5 +1,34 @@
 # Validation register
 
+## Output queue under a full request window — 2026-09-25
+
+CI intermittently failed `test_callback_window_during_host_request` with
+"plugin exited early" on ubuntu-24.04 and macos-15. The plugin's output queue
+held four frames and `Rpc::send` treats a full queue as a stalled host. The main
+loop answers an admitted burst of 16 host requests back to back. When the writer
+thread was not scheduled between replies, the fifth reply stopped the plugin.
+Instrumentation attributed every reproduced exit to "Host output stalled". The
+queue now holds the 16-request host window, the 12 plugin requests, and headroom
+for registration, the stop sentinel and two late path-validation replies. The
+writer's per-frame pipe deadline still detects a real stall. A Rust test fills
+both windows with no draining writer and fails at the old size. Pinned to one
+CPU, the wire test failed 13 of 30 runs before the change and passed 40 of 40 after.
+
+On macos-15-intel, the discovery metadata test compared the catalog's resolved
+database path with the unresolved `/var/folders` temporary path. It now compares
+with the resolved path. This was reproduced and confirmed on Linux with `TMPDIR`
+set to a symlinked directory, where all wire, interactive and full-value tests
+pass. It was not run on macOS.
+
+Linux x86-64 passed formatting, locked all-target Clippy with warnings denied,
+45 Rust tests, 17 wire tests, 111 interactive tests and 11 full-value tests.
+The native suite passed its 11 cases with four skips against Runyte debug host
+`cd711f2`, the CI pin. Fresh combined line coverage is **87.67%** (5,793 of
+6,608 lines), above the unchanged 75% floor. PostgreSQL tests did not run
+because server tools are not installed here. These results establish Linux
+SQLite/native-editor behavior, not native macOS or PostgreSQL acceptance. The
+ordinary debug plugin was rebuilt after coverage.
+
 ## Contextual help topics — 2026-09-24
 
 On hosts advertising `view-help`, registration sends nine workflow topics:
