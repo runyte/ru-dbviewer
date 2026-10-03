@@ -221,6 +221,46 @@ async fn postgres_nonscalar_types_use_text_filters() {
     postgres_fixture_sql("DROP TABLE browse_textual_types").await;
 }
 #[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_retirement_is_immediate_after_interruption_or_cap() {
+    for reason in ["read cap", "write cap", "cancel", "timeout"] {
+        let db = Database::open(
+            &postgres_profile("retirement"),
+            true,
+            "dbviewer-test-only".into(),
+        )
+        .await
+        .unwrap();
+        let cancel = token();
+        if reason == "cancel" {
+            cancel.cancel();
+        }
+        let seconds = if reason == "timeout" { 1 } else { 5 };
+        let sql = if reason == "timeout" {
+            "SELECT pg_sleep(5)"
+        } else {
+            "SELECT generate_series(1,1001)"
+        };
+        let result = db
+            .execute(sql.into(), reason == "write cap", cancel, seconds)
+            .await;
+        if reason == "read cap" {
+            assert!(result.unwrap().truncated);
+        } else {
+            assert!(result.is_err());
+        }
+        assert!(
+            !db.usable(),
+            "{reason} must retire before returning to the caller"
+        );
+        assert!(
+            db.execute("SELECT 42".into(), false, token(), 5)
+                .await
+                .is_err()
+        );
+    }
+}
+#[tokio::test]
 async fn sqlite_declared_numeric_types_keep_numeric_filtering() {
     use ru_dbviewer::browse::{Browse, Filter, Operator};
     let (_dir, profile) = fixture();

@@ -5,7 +5,14 @@ use crate::{
     results::{Cell, Column, Data},
 };
 use futures_util::{StreamExt, pin_mut};
-use std::{io::BufReader, sync::Arc, time::Duration};
+use std::{
+    io::BufReader,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio_postgres::{Client, SimpleQueryMessage, config::SslMode};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tokio_util::sync::CancellationToken;
@@ -15,6 +22,7 @@ pub struct Postgres {
     storage: crate::result_storage::Storage,
     tls: Option<MakeRustlsConnect>,
     task: tokio::task::JoinHandle<()>,
+    retired: AtomicBool,
 }
 impl Drop for Postgres {
     fn drop(&mut self) {
@@ -146,6 +154,7 @@ impl Postgres {
             tls,
             task,
             storage,
+            retired: AtomicBool::new(false),
         })
     }
     pub async fn execute(
@@ -166,6 +175,9 @@ impl Postgres {
         cancel: CancellationToken,
         seconds: u64,
     ) -> Result<Data> {
+        if !self.usable() {
+            return Err("PostgreSQL connection is retired; reconnect explicitly".into());
+        }
         let work = async {
             let mut capture =
                 self.storage
@@ -275,6 +287,7 @@ impl Postgres {
         };
         let capped = result.as_ref().is_ok_and(|d| d.truncated);
         if interrupted || capped {
+            self.retired.store(true, Ordering::Release);
             let _ = tokio::time::timeout(Duration::from_millis(400), async {
                 let token = self.client.cancel_token();
                 if let Some(tls) = self.tls.clone() {
@@ -302,7 +315,9 @@ impl Postgres {
         result
     }
     pub fn usable(&self) -> bool {
-        !self.task.is_finished() && !self.client.is_closed()
+        !self.retired.load(Ordering::Acquire)
+            && !self.task.is_finished()
+            && !self.client.is_closed()
     }
     pub async fn settle(&self, commit: bool) -> Result<()> {
         tokio::time::timeout(
