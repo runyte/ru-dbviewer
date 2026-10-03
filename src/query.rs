@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::Result;
 use sqlparser::{
-    ast::{BinaryOperator, Expr, Statement},
+    ast::{BinaryOperator, Expr, SetExpr, Statement},
     dialect::{Dialect, PostgreSqlDialect, SQLiteDialect},
     keywords::Keyword,
     parser::{Parser, ParserError},
@@ -120,10 +120,14 @@ pub fn affects_rows(sql: &str) -> bool {
         .ok()
         .is_some_and(|s| {
             s.len() == 1
-                && matches!(
-                    s[0],
-                    Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)
-                )
+                && match &s[0] {
+                    Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_) => true,
+                    Statement::Query(query) => matches!(
+                        query.body.as_ref(),
+                        SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_)
+                    ),
+                    _ => false,
+                }
         })
 }
 pub fn ident(s: &str) -> String {

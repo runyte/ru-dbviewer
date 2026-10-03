@@ -17,6 +17,103 @@ fn fixture() -> (tempfile::TempDir, Profile) {
         },
     )
 }
+fn postgres_profile(name: &str) -> Profile {
+    Profile::Postgres {
+        name: name.into(),
+        host: "127.0.0.1".into(),
+        port: std::env::var("DBVIEWER_TEST_PG_PORT")
+            .expect("set isolated PostgreSQL port")
+            .parse()
+            .unwrap(),
+        database: "dbviewer".into(),
+        user: "dbviewer".into(),
+        plaintext: true,
+        password_env: String::new(),
+        ca: String::new(),
+        certificate: String::new(),
+        key: String::new(),
+    }
+}
+
+async fn cte_affected_counts_contract(db: &Database) {
+    let ddl = db
+        .execute(
+            "CREATE TABLE affected_contract(value INTEGER)".into(),
+            true,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    if matches!(db, Database::Sqlite(_)) {
+        assert_eq!(ddl.affected, None);
+    }
+    db.settle(true).await.unwrap();
+    for (sql, expected) in [
+        (
+            "WITH values_to_add(v) AS (SELECT 1 UNION ALL SELECT 2) INSERT INTO affected_contract SELECT v FROM values_to_add",
+            2,
+        ),
+        (
+            "WITH chosen(v) AS (SELECT 1) UPDATE affected_contract SET value=value+10 WHERE value IN (SELECT v FROM chosen)",
+            1,
+        ),
+        (
+            "WITH chosen(v) AS (SELECT 999) UPDATE affected_contract SET value=0 WHERE value IN (SELECT v FROM chosen)",
+            0,
+        ),
+        (
+            "WITH chosen(v) AS (SELECT 2) DELETE FROM affected_contract WHERE value IN (SELECT v FROM chosen)",
+            1,
+        ),
+    ] {
+        let data = db.execute(sql.into(), true, token(), 5).await.unwrap();
+        assert_eq!(data.affected, Some(expected), "{sql}");
+        db.settle(true).await.unwrap();
+    }
+    let data = db
+        .execute(
+            "SELECT value FROM affected_contract".into(),
+            false,
+            token(),
+            5,
+        )
+        .await
+        .unwrap();
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0][0].text.as_deref(), Some("11"));
+    if matches!(db, Database::Sqlite(_)) {
+        assert_eq!(data.affected, None);
+    }
+    let ddl = db
+        .execute("DROP TABLE affected_contract".into(), true, token(), 5)
+        .await
+        .unwrap();
+    if matches!(db, Database::Sqlite(_)) {
+        assert_eq!(ddl.affected, None);
+    }
+    db.settle(true).await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_cte_writes_report_affected_counts() {
+    let (_dir, profile) = fixture();
+    let db = Database::open(&profile, true, String::new()).await.unwrap();
+    cte_affected_counts_contract(&db).await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_cte_writes_report_affected_counts() {
+    let db = Database::open(
+        &postgres_profile("cte-counts"),
+        true,
+        "dbviewer-test-only".into(),
+    )
+    .await
+    .unwrap();
+    cte_affected_counts_contract(&db).await;
+}
 #[tokio::test]
 async fn sqlite_catalog_browse_schema_and_types() {
     let (_dir, p) = fixture();
