@@ -125,8 +125,9 @@ impl Database {
     pub async fn browse_keys(&self, t: &Table, cancel: CancellationToken) -> Result<Vec<String>> {
         let keys_sql = match self {
             Self::Sqlite(_) => format!(
-                "SELECT name FROM pragma_table_info({}) WHERE pk>0 ORDER BY pk",
-                query::literal(&t.name)
+                "SELECT name FROM pragma_table_info({}, {}) WHERE pk>0 ORDER BY pk",
+                query::literal(&t.name),
+                query::literal(&t.schema)
             ),
             Self::Postgres(_) => format!(
                 "SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indisprimary AND k.ord <= i.indnkeyatts AND n.nspname={} AND c.relname={} ORDER BY k.ord",
@@ -172,8 +173,10 @@ impl Database {
     pub async fn schema(&self, t: &Table, cancel: CancellationToken) -> Result<Data> {
         let sql = match self {
             Self::Sqlite(_) => format!(
-                "SELECT 'column' AS kind, name, type AS definition, CASE WHEN pk>0 THEN 'primary key #'||pk ELSE '' END AS key, \"notnull\" AS required, dflt_value AS default_value FROM pragma_table_xinfo({0}) UNION ALL SELECT 'index', name, COALESCE(sql,'automatic'),'',NULL,NULL FROM sqlite_schema WHERE type='index' AND tbl_name={0} UNION ALL SELECT 'foreign key', \"from\", \"table\"||COALESCE('('||\"to\"||')',''), 'on update '||on_update||' on delete '||on_delete,NULL,NULL FROM pragma_foreign_key_list({0})",
-                query::literal(&t.name)
+                "SELECT 'column' AS kind, name, type AS definition, CASE WHEN pk>0 THEN 'primary key #'||pk ELSE '' END AS key, \"notnull\" AS required, dflt_value AS default_value FROM pragma_table_xinfo({0}, {1}) UNION ALL SELECT 'index', name, COALESCE(sql,'automatic'),'',NULL,NULL FROM {2}.sqlite_schema WHERE type='index' AND tbl_name={0} UNION ALL SELECT 'foreign key', \"from\", \"table\"||COALESCE('('||\"to\"||')',''), 'on update '||on_update||' on delete '||on_delete,NULL,NULL FROM pragma_foreign_key_list({0}, {1})",
+                query::literal(&t.name),
+                query::literal(&t.schema),
+                query::ident(&t.schema)
             ),
             Self::Postgres(_) => format!(
                 "SELECT 'column' AS kind, a.attname AS name, format_type(a.atttypid,a.atttypmod) AS definition, a.attnotnull::text AS required, pg_get_expr(d.adbin,d.adrelid) AS default_value FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname={0} AND c.relname={1} AND a.attnum>0 AND NOT a.attisdropped UNION ALL SELECT 'constraint', con.conname, pg_get_constraintdef(con.oid),NULL,NULL FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname={0} AND c.relname={1} UNION ALL SELECT 'index',indexname,indexdef,NULL,NULL FROM pg_indexes WHERE schemaname={0} AND tablename={1}",

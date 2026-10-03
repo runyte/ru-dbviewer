@@ -585,6 +585,84 @@ async fn sqlite_schema_preserves_implicit_foreign_key_targets() {
     }
 }
 #[tokio::test]
+async fn sqlite_metadata_uses_the_captured_schema_despite_temp_shadowing() {
+    let (_directory, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup
+        .execute_batch("CREATE INDEX main_items_name ON items(name)")
+        .unwrap();
+    drop(setup);
+    let db = Database::open(&profile, true, String::new()).await.unwrap();
+    for sql in [
+        "CREATE TEMP TABLE items(temp_id INTEGER PRIMARY KEY,temp_value TEXT REFERENCES temp_parent(id))",
+        "CREATE INDEX temp.temp_items_value ON items(temp_value)",
+    ] {
+        db.execute(sql.into(), true, token(), 5).await.unwrap();
+        db.settle(true).await.unwrap();
+    }
+    let main = db
+        .catalog(false, token())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|table| table.name == "items")
+        .unwrap();
+    assert_eq!(main.schema, "main");
+    let temporary = ru_dbviewer::db::Table {
+        schema: "temp".into(),
+        ..main.clone()
+    };
+    for (table, key, expected_columns, expected_index) in [
+        (&main, "id", vec!["id", "name", "amount"], "main_items_name"),
+        (
+            &temporary,
+            "temp_id",
+            vec!["temp_id", "temp_value"],
+            "temp_items_value",
+        ),
+    ] {
+        assert_eq!(db.browse_keys(table, token()).await.unwrap(), [key]);
+        let schema = db.schema(table, token()).await.unwrap();
+        assert_eq!(
+            schema
+                .rows
+                .iter()
+                .filter(|row| row[0].text.as_deref() == Some("column"))
+                .map(|row| row[1].text.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            expected_columns
+        );
+        let indexes = schema
+            .rows
+            .iter()
+            .filter(|row| row[0].text.as_deref() == Some("index"))
+            .map(|row| row[1].text.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(indexes, [expected_index]);
+        let foreign_keys = schema
+            .rows
+            .iter()
+            .filter(|row| row[0].text.as_deref() == Some("foreign key"))
+            .collect::<Vec<_>>();
+        if table.schema == "main" {
+            assert!(foreign_keys.is_empty());
+        } else {
+            assert_eq!(foreign_keys[0][2].text.as_deref(), Some("temp_parent(id)"));
+        }
+    }
+    assert_eq!(db.browse(&main, 0, token()).await.unwrap().rows.len(), 2);
+    assert!(
+        db.browse(&temporary, 0, token())
+            .await
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+}
+#[tokio::test]
 async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
     let (_dir, profile) = fixture();
     let Profile::Sqlite { path, .. } = &profile else {
