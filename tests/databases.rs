@@ -261,6 +261,95 @@ async fn postgres_retirement_is_immediate_after_interruption_or_cap() {
     }
 }
 #[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_open_deadline_includes_session_setup() {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    let server_port = std::env::var("DBVIEWER_TEST_PG_PORT")
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    let saw_setup = Arc::new(AtomicBool::new(false));
+    let observed = saw_setup.clone();
+    let release = token();
+    let released = release.clone();
+    let mut proxy = tokio::spawn(async move {
+        let (front, _) = listener.accept().await.unwrap();
+        let back = TcpStream::connect(("127.0.0.1", server_port))
+            .await
+            .unwrap();
+        let (mut front_read, mut front_write) = front.into_split();
+        let (mut back_read, mut back_write) = back.into_split();
+        let upstream = tokio::io::copy(&mut front_read, &mut back_write);
+        let downstream = async {
+            loop {
+                let mut header = [0; 5];
+                if back_read.read_exact(&mut header).await.is_err() {
+                    break;
+                }
+                let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                assert!((4..=1024 * 1024).contains(&length));
+                let mut body = vec![0; length - 4];
+                if back_read.read_exact(&mut body).await.is_err() {
+                    break;
+                }
+                if header[0] == b'C' && body == b"SET\0" {
+                    observed.store(true, Ordering::Release);
+                    released.cancelled().await;
+                    break;
+                }
+                if front_write.write_all(&header).await.is_err()
+                    || front_write.write_all(&body).await.is_err()
+                {
+                    break;
+                }
+            }
+        };
+        tokio::select! { _ = upstream => {}, _ = downstream => {} }
+    });
+    let mut profile = postgres_profile("setup-timeout");
+    let Profile::Postgres { port, .. } = &mut profile else {
+        unreachable!()
+    };
+    *port = proxy_port;
+    let result = tokio::time::timeout(
+        Duration::from_secs(12),
+        Database::open(&profile, false, "dbviewer-test-only".into()),
+    )
+    .await;
+    let closed = tokio::time::timeout(Duration::from_secs(1), &mut proxy)
+        .await
+        .is_ok();
+    release.cancel();
+    if !closed {
+        tokio::time::timeout(Duration::from_secs(1), proxy)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(
+        saw_setup.load(Ordering::Acquire),
+        "fixture must reach session initialization"
+    );
+    let error = result
+        .expect("connection's own deadline must cover session initialization")
+        .err()
+        .expect("stalled setup cannot connect successfully");
+    assert!(error.contains("timed out"), "{error}");
+    assert!(closed, "failed opening must close its driver connection");
+}
+#[tokio::test]
 async fn sqlite_declared_numeric_types_keep_numeric_filtering() {
     use ru_dbviewer::browse::{Browse, Filter, Operator};
     let (_dir, profile) = fixture();

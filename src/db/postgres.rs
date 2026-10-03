@@ -83,6 +83,7 @@ impl Postgres {
         password: String,
         storage: crate::result_storage::Storage,
     ) -> Result<Self> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let Profile::Postgres {
             host,
             port,
@@ -102,9 +103,13 @@ impl Postgres {
         } else {
             let (ca, cert, key) = (ca.clone(), certificate.clone(), key.clone());
             Some(
-                tokio::task::spawn_blocking(move || tls_config(&ca, &cert, &key))
-                    .await
-                    .map_err(|_| "TLS worker failed")??,
+                tokio::time::timeout_at(
+                    deadline,
+                    tokio::task::spawn_blocking(move || tls_config(&ca, &cert, &key)),
+                )
+                .await
+                .map_err(|_| "Connection timed out")?
+                .map_err(|_| "TLS worker failed")??,
             )
         };
         let mut config = tokio_postgres::Config::new();
@@ -122,8 +127,19 @@ impl Postgres {
                 SslMode::Require
             });
         let (client, task) = if let Some(tls) = tls.clone() {
+            let (client, connection) = tokio::time::timeout_at(deadline, config.connect(tls))
+                .await
+                .map_err(|_| "Connection timed out")?
+                .map_err(error)?;
+            (
+                client,
+                tokio::spawn(async move {
+                    let _ = connection.await;
+                }),
+            )
+        } else {
             let (client, connection) =
-                tokio::time::timeout(Duration::from_secs(10), config.connect(tls))
+                tokio::time::timeout_at(deadline, config.connect(tokio_postgres::NoTls))
                     .await
                     .map_err(|_| "Connection timed out")?
                     .map_err(error)?;
@@ -133,29 +149,17 @@ impl Postgres {
                     let _ = connection.await;
                 }),
             )
-        } else {
-            let (client, connection) = tokio::time::timeout(
-                Duration::from_secs(10),
-                config.connect(tokio_postgres::NoTls),
-            )
-            .await
-            .map_err(|_| "Connection timed out")?
-            .map_err(error)?;
-            (
-                client,
-                tokio::spawn(async move {
-                    let _ = connection.await;
-                }),
-            )
         };
-        client.batch_execute("SET standard_conforming_strings=on; SET idle_in_transaction_session_timeout='5min'").await.map_err(error)?;
-        Ok(Self {
+        let db = Self {
             client,
             tls,
             task,
             storage,
             retired: AtomicBool::new(false),
-        })
+        };
+        tokio::time::timeout_at(deadline, db.client.batch_execute("SET standard_conforming_strings=on; SET idle_in_transaction_session_timeout='5min'"))
+            .await.map_err(|_| "Connection timed out")?.map_err(error)?;
+        Ok(db)
     }
     pub async fn execute(
         &self,
