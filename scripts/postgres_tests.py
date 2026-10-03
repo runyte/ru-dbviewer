@@ -34,7 +34,7 @@ def main():
         started=False
         try:
             run([pg('pg_ctl'),'-D',data,'-l',root/'server.log','-w','start']);started=True
-            run([pg('psql'),'-h',root,'-p',port,'-U','dbviewer','-d','postgres','-c','CREATE DATABASE dbviewer','-c','CREATE ROLE dbviewer_cert LOGIN'])
+            run([pg('psql'),'-X','-h',root,'-p',port,'-U','dbviewer','-d','postgres','-c','CREATE DATABASE dbviewer','-c','CREATE ROLE dbviewer_cert LOGIN'])
             env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
             subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
         finally:
