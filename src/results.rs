@@ -179,6 +179,26 @@ impl Cell {
             Some(s) => format!("{}{}", escape(s), if self.truncated { " …" } else { "" }),
         }
     }
+    /// Format only the visible prefix, without scanning or allocating the rest
+    /// of a retained value. This has the same output as clipping `display()`.
+    pub fn display_short(&self, max: usize) -> String {
+        let mut output = match &self.text {
+            None => "NULL".into(),
+            Some(s) if s.is_empty() => "\"\"".into(),
+            Some(s) => {
+                let mut output = escape_prefix(s, max);
+                if self.truncated && output.len() <= max {
+                    output.push_str(" …");
+                }
+                output
+            }
+        };
+        if output.len() > max {
+            output.truncate(prefix_end(&output, max.saturating_sub(4)));
+            output.push_str(" …");
+        }
+        output
+    }
 }
 fn prefix_end(text: &str, limit: usize) -> usize {
     let mut end = text.len().min(limit);
@@ -188,12 +208,18 @@ fn prefix_end(text: &str, limit: usize) -> usize {
     end
 }
 pub fn escape(s: &str) -> String {
-    let mut output = String::with_capacity(s.len());
+    escape_prefix(s, usize::MAX)
+}
+fn escape_prefix(s: &str, max: usize) -> String {
+    let mut output = String::with_capacity(s.len().min(max));
     for c in s.chars() {
         if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
             output.extend(c.escape_default());
         } else {
             output.push(c);
+        }
+        if output.len() > max {
+            break;
         }
     }
     output

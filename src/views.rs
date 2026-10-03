@@ -245,7 +245,7 @@ impl Content {
                                             "{} [{}]: {}",
                                             data.columns.get(i).map_or("?", |c| &c.name),
                                             data.columns.get(i).map_or("?", |c| &c.kind),
-                                            c.display()
+                                            c.display_short(2000)
                                         ),
                                     )
                                 })
@@ -312,9 +312,13 @@ impl Content {
                     // cell previews instead; record inspection retains their values.
                     let budget = 690_000 / count.max(1);
                     for (index, r) in data.rows.iter().enumerate().skip(*offset).take(page_size) {
+                        let cells = columns
+                            .iter()
+                            .map(|&i| r[i].display_short(512))
+                            .collect::<Vec<_>>();
                         let mut preview = 512;
                         loop {
-                            let value = json!({"id":index.to_string(),"text":"","role":"ordinary","cells":columns.iter().map(|&i|json!({"text":short(&r[i].display(),preview),"role":if r[i].text.is_none(){"muted"}else{"ordinary"}})).collect::<Vec<_>>()});
+                            let value = json!({"id":index.to_string(),"text":"","role":"ordinary","cells":columns.iter().zip(&cells).map(|(&i, text)|json!({"text":short(text,preview),"role":if r[i].text.is_none(){"muted"}else{"ordinary"}})).collect::<Vec<_>>()});
                             if value.to_string().len() <= budget || preview <= 4 {
                                 rows.push(value);
                                 break;
