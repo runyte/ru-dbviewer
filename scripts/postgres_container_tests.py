@@ -6,13 +6,12 @@ No image is pulled; all database state is temporary and the container is removed
 Native CI uses postgres_tests.py. This alternative also exercises Unix sockets.
 """
 import argparse
-import os
 from pathlib import Path
 import socket
 import subprocess
 import tempfile
 
-from postgres_tests import ROOT, create_certificates
+from postgres_tests import ROOT, create_certificates, test_environment
 
 
 def run(command):
@@ -69,11 +68,7 @@ def main():
                      "-c", "CREATE DATABASE dbviewer", "-c", "CREATE ROLE dbviewer_cert LOGIN")
             version = postgres("postgres", "--version").stdout.strip()
             print(f"Disposable fixture: {version} ({args.image})", flush=True)
-            env = {**os.environ, "DBVIEWER_TEST_PG_PORT": str(port),
-                   "DBVIEWER_TEST_CA": str(root / "ca.crt"),
-                   "DBVIEWER_TEST_CLIENT_CERT": str(root / "client.crt"),
-                   "DBVIEWER_TEST_CLIENT_KEY": str(root / "client.key"),
-                   "DBVIEWER_TEST_SOCKET": str(sockets)}
+            env = test_environment(root, port, sockets)
             subprocess.run(["cargo", "test", "--locked", "--test", "databases", "postgres_",
                             "--", "--ignored"], cwd=ROOT, env=env, check=True)
             subprocess.run(["python3", "tests/postgres_wire.py"], cwd=ROOT, env=env, check=True)

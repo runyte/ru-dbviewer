@@ -17,6 +17,29 @@ spec.loader.exec_module(fixture)
 
 
 class PostgresFixtureTests(unittest.TestCase):
+    def test_rust_environment_isolates_certificate_store_and_preserves_coverage(self):
+        with tempfile.TemporaryDirectory(prefix='dbv-rust-env-') as directory:
+            root = Path(directory)
+            inherited = {
+                'SSL_CERT_FILE': '/fixture/caller/certificates.pem',
+                'SSL_CERT_DIR': '/fixture/caller/certificates',
+                'LLVM_PROFILE_FILE': '/fixture/coverage/%p.profraw',
+                'CARGO_BUILD_JOBS': '1',
+            }
+            with mock.patch.dict(os.environ, inherited, clear=True):
+                env = fixture.test_environment(root, 65432, root / 'socket')
+                self.assertEqual(dict(os.environ), inherited)
+            self.assertEqual(Path(env['SSL_CERT_FILE']).parent, root)
+            self.assertEqual(Path(env['SSL_CERT_FILE']).read_bytes(), b'')
+            self.assertEqual(Path(env['SSL_CERT_DIR']).parent, root)
+            self.assertEqual(list(Path(env['SSL_CERT_DIR']).iterdir()), [])
+            self.assertEqual(env['DBVIEWER_TEST_CA'], str(root / 'ca.crt'))
+            self.assertNotEqual(env['SSL_CERT_FILE'], env['DBVIEWER_TEST_CA'])
+            self.assertEqual(env['DBVIEWER_TEST_PG_PORT'], '65432')
+            self.assertEqual(env['DBVIEWER_TEST_SOCKET'], str(root / 'socket'))
+            self.assertEqual(env['LLVM_PROFILE_FILE'], inherited['LLVM_PROFILE_FILE'])
+            self.assertEqual(env['CARGO_BUILD_JOBS'], '1')
+
     def test_cluster_commands_isolate_openssl_config_and_preserve_coverage(self):
         stop_error = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'stop'])
         stopped = subprocess.CalledProcessError(3, ['fixture-pg_ctl', 'status'])

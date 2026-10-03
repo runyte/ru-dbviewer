@@ -20,6 +20,19 @@ def openssl_environment(root):
     return {**os.environ, 'OPENSSL_CONF': str(root / 'openssl.cnf'),
             'OPENSSL_CONF_INCLUDE': str(root)}
 
+def test_environment(root, port, sockets):
+    # Keep the fixture CA explicit, so untrusted-root tests stay meaningful.
+    roots_file = root / 'empty-roots.pem'
+    roots_file.write_bytes(b'')
+    roots_dir = root / 'empty-roots'
+    roots_dir.mkdir(exist_ok=True)
+    return {**os.environ, 'SSL_CERT_FILE': str(roots_file),
+            'SSL_CERT_DIR': str(roots_dir), 'DBVIEWER_TEST_PG_PORT': str(port),
+            'DBVIEWER_TEST_CA': str(root / 'ca.crt'),
+            'DBVIEWER_TEST_CLIENT_CERT': str(root / 'client.crt'),
+            'DBVIEWER_TEST_CLIENT_KEY': str(root / 'client.key'),
+            'DBVIEWER_TEST_SOCKET': str(sockets)}
+
 class NativeCluster:
     def __enter__(self):
         self.root = Path(tempfile.mkdtemp(prefix='dbv-pg-'))
@@ -112,7 +125,7 @@ def main():
         hba=data/'pg_hba.conf';hba.write_text('hostssl all dbviewer_cert 127.0.0.1/32 cert\n'+hba.read_text())
         cluster.start()
         create_database(root, port)
-        env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
+        env = test_environment(root, port, root)
         subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
         subprocess.run(['python3', 'tests/postgres_wire.py'], cwd=ROOT, env=env, check=True)
 
