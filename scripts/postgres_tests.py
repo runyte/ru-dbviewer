@@ -16,6 +16,42 @@ def run(args, **kwargs):
 def pg(name):
     return str(Path(os.environ['PG_BIN'])/name) if os.environ.get('PG_BIN') else shutil.which(name) or name
 
+class NativeCluster:
+    def __enter__(self):
+        self.root = Path(tempfile.mkdtemp(prefix='dbv-pg-'))
+        self.start_attempted = False
+        return self
+
+    def start(self):
+        # A failed wait does not establish that PostgreSQL failed to start.
+        self.start_attempted = True
+        run([pg('pg_ctl'), '-D', self.root / 'data', '-l', self.root / 'server.log',
+             '-t', '60', '-w', 'start'])
+
+    def stop(self):
+        try:
+            run([pg('pg_ctl'), '-D', self.root / 'data', '-m', 'immediate',
+                 '-t', '60', '-w', 'stop'])
+        except subprocess.CalledProcessError as stop_error:
+            try:
+                run([pg('pg_ctl'), '-D', self.root / 'data', 'status'])
+            except subprocess.CalledProcessError as status_error:
+                if status_error.returncode == 3:  # Documented: no server running.
+                    return
+            raise RuntimeError('Could not confirm PostgreSQL fixture shutdown') from stop_error
+
+    def __exit__(self, error_type, error, traceback):
+        try:
+            if self.start_attempted:
+                self.stop()
+            shutil.rmtree(self.root)
+        except Exception as cleanup_error:
+            message = f'PostgreSQL fixture cleanup failed; retained storage at {self.root}'
+            if error is None:
+                raise RuntimeError(message) from cleanup_error
+            error.add_note(message)
+        return False
+
 def create_database(root, port):
     # libpq's hostaddr and service settings are independent of psql's explicit
     # host argument. Clear every PG option, including future libpq additions.
@@ -31,8 +67,8 @@ def create_database(root, port):
                 '-c', 'CREATE ROLE dbviewer_cert LOGIN'], env=env)
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='dbv-pg-') as directory:
-        root=Path(directory); data=root/'data';password=root/'password';password.write_text('dbviewer-test-only\n');password.chmod(0o600)
+    with NativeCluster() as cluster:
+        root=cluster.root; data=root/'data';password=root/'password';password.write_text('dbviewer-test-only\n');password.chmod(0o600)
         with socket.socket() as listener:
             listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
         run([pg('initdb'),'-D',data,'-U','dbviewer','--pwfile',password,'--auth-local=trust','--auth-host=scram-sha-256','--no-locale','--encoding=UTF8'])
@@ -45,13 +81,9 @@ def main():
         with (data/'postgresql.conf').open('a') as f:
             f.write(f"\nlisten_addresses='127.0.0.1'\nport={port}\nunix_socket_directories='{root}'\nssl=on\nssl_ca_file='{root}/ca.crt'\nssl_cert_file='{root}/server.crt'\nssl_key_file='{root}/server.key'\n")
         hba=data/'pg_hba.conf';hba.write_text('hostssl all dbviewer_cert 127.0.0.1/32 cert\n'+hba.read_text())
-        started=False
-        try:
-            run([pg('pg_ctl'),'-D',data,'-l',root/'server.log','-w','start']);started=True
-            create_database(root, port)
-            env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
-            subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
-        finally:
-            if started:run([pg('pg_ctl'),'-D',data,'-m','immediate','-w','stop'])
+        cluster.start()
+        create_database(root, port)
+        env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
+        subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
 
 if __name__=='__main__':main()

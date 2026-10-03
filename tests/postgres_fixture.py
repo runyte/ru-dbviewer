@@ -17,6 +17,78 @@ spec.loader.exec_module(fixture)
 
 
 class PostgresFixtureTests(unittest.TestCase):
+    def test_successful_cluster_stops_before_removing_storage(self):
+        with mock.patch.object(fixture, 'run') as run:
+            with fixture.NativeCluster() as cluster:
+                cluster.start()
+                self.assertTrue(cluster.root.is_dir())
+            self.assertFalse(cluster.root.exists())
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ['start', 'stop'])
+        for call in run.call_args_list:
+            args = call.args[0]
+            self.assertEqual(args[args.index('-D') + 1], cluster.root / 'data')
+            self.assertEqual(args[args.index('-t') + 1], '60')
+
+    def test_failed_start_still_stops_and_preserves_original_error(self):
+        original = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'start'])
+        with mock.patch.object(fixture, 'run', side_effect=[original, None]) as run:
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                with fixture.NativeCluster() as cluster:
+                    cluster.start()
+            self.assertIs(error.exception, original)
+            self.assertFalse(cluster.root.exists())
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ['start', 'stop'])
+
+    def test_failed_start_accepts_only_confirmed_no_server_status(self):
+        original = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'start'])
+        stop_error = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'stop'])
+        stopped = subprocess.CalledProcessError(3, ['fixture-pg_ctl', 'status'])
+        with mock.patch.object(fixture, 'run', side_effect=[original, stop_error, stopped]) as run:
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                with fixture.NativeCluster() as cluster:
+                    cluster.start()
+            self.assertIs(error.exception, original)
+            self.assertFalse(cluster.root.exists())
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list],
+                         ['start', 'stop', 'status'])
+
+    def test_running_server_after_failed_stop_retains_storage_and_start_error(self):
+        original = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'start'])
+        stop_error = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'stop'])
+        with mock.patch.object(fixture, 'run', side_effect=[original, stop_error, None]):
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                with fixture.NativeCluster() as cluster:
+                    cluster.start()
+        try:
+            self.assertIs(error.exception, original)
+            self.assertTrue(cluster.root.is_dir())
+            self.assertIn(str(cluster.root), '\n'.join(original.__notes__))
+        finally:
+            shutil.rmtree(cluster.root)
+
+    def test_unknown_status_after_failed_stop_retains_storage_and_reports_failure(self):
+        stop_error = subprocess.CalledProcessError(1, ['fixture-pg_ctl', 'stop'])
+        unknown = subprocess.CalledProcessError(4, ['fixture-pg_ctl', 'status'])
+        with mock.patch.object(fixture, 'run', side_effect=[None, stop_error, unknown]):
+            with self.assertRaises(RuntimeError) as error:
+                with fixture.NativeCluster() as cluster:
+                    cluster.start()
+        try:
+            self.assertTrue(cluster.root.is_dir())
+            self.assertIn(str(cluster.root), str(error.exception))
+        finally:
+            shutil.rmtree(cluster.root)
+
+    def test_failure_before_start_removes_storage_without_pg_ctl(self):
+        original = RuntimeError('fixture initialization failed')
+        with mock.patch.object(fixture, 'run') as run:
+            with self.assertRaises(RuntimeError) as error:
+                with fixture.NativeCluster() as cluster:
+                    raise original
+            self.assertIs(error.exception, original)
+            self.assertFalse(cluster.root.exists())
+            run.assert_not_called()
+
     def test_client_environment_isolates_options_and_preserves_coverage(self):
         with tempfile.TemporaryDirectory(prefix='dbv-client-env-') as directory:
             root = Path(directory)
