@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Optional real-editor acceptance. Set RUNYTE_BIN to a compatible Runyte build."""
+"""Python 3.12+ real-editor acceptance; set RUNYTE_BIN to a compatible Runyte build."""
 import codecs
 import errno
 import fcntl
+import gc
 from contextlib import closing
+import itertools
 import json
 import os
 from pathlib import Path
 import pty
 import re
 import select
+import shutil
 import signal
 import sqlite3
 import struct
@@ -100,6 +103,53 @@ class Screen:
         return "\n".join("".join(row) for row in self.cells)
 
 
+class FixtureHost:
+    """Observe one captured process; never signal an unverified or reused PID."""
+    def __init__(self, pid, commands):
+        self.pid, self.commands = pid, commands
+        self.identity = self.snapshot()
+
+    def snapshot(self):
+        # Both GNU and Darwin ps expose these fields. Keep args last and uncut;
+        # unlike a bare PID, the start time and exact fixture command identify
+        # the process we observed before asking the host to stop.
+        process = subprocess.run(["ps", "-ww", "-p", str(self.pid),
+                                  "-o", "lstart=,stat=,args="],
+                                 capture_output=True, text=True, timeout=2,
+                                 env={**os.environ, "LC_ALL": "C"})
+        if process.returncode == 1 and not process.stdout.strip():
+            return None
+        fields = process.stdout.strip().split(None, 6)
+        if process.returncode != 0 or len(fields) != 7:
+            raise RuntimeError(f"Cannot observe fixture host {self.pid}")
+        if fields[5].startswith("Z"):
+            return None
+        return " ".join(fields[:5]), fields[6]
+
+    def alive(self):
+        return self.identity is not None and self.snapshot() == self.identity
+
+    def terminate(self):
+        if not self.alive():
+            return
+        if self.identity[1] not in self.commands:
+            raise RuntimeError(f"Refusing to terminate unverified fixture host {self.pid}")
+        # A pidfd pins this specific process even if it exits between checking
+        # its identity and signalling. On systems without this facility, keep
+        # the fixture files and report failure rather than risk a reused PID.
+        if not callable(getattr(os, "pidfd_open", None)) or not callable(getattr(signal, "pidfd_send_signal", None)):
+            raise RuntimeError(f"No safe termination handle for fixture host {self.pid}")
+        try:
+            descriptor = os.pidfd_open(self.pid)
+            try:
+                if self.alive():
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            finally:
+                os.close(descriptor)
+        except ProcessLookupError:
+            pass
+
+
 class NativeEditor:
     """A real PTY and optionally retained host, with all state below one temp root."""
     def __init__(self, test, *, persistent=False):
@@ -107,8 +157,17 @@ class NativeEditor:
         # Keep the canonical workspace socket path short on Linux and macOS.
         # Darwin's default /var/folders TMPDIR can exceed the host's limit once
         # our project/.runyte/host/workspace.sock suffix is appended.
-        self.temporary = tempfile.TemporaryDirectory(prefix="dbv-", dir="/tmp")
+        # Retain files even after GC if a failed teardown cannot prove that its
+        # detached host has exited. Successful teardown explicitly cleans up.
+        self.temporary = tempfile.TemporaryDirectory(prefix="dbv-", dir="/tmp", delete=False)
         self.root = Path(self.temporary.name)
+        try:
+            self.prepare()
+        except BaseException:
+            self.temporary.cleanup()
+            raise
+
+    def prepare(self):
         self.project = self.root / "project"
         self.project.mkdir()
         self.database = self.root / "tasks.sqlite3"
@@ -291,13 +350,8 @@ class NativeEditor:
         # The stop acknowledgement precedes endpoint cleanup and plugin shutdown.
         # Capture fixture-owned hosts before stopping them, then wait for their
         # actual exit before deleting directories they can still write into.
-        host_pids = set()
-        if self.persistent:
-            for endpoint in self.root.rglob("endpoint.json"):
-                try:
-                    host_pids.add(int(json.loads(endpoint.read_text())["pid"]))
-                except FileNotFoundError:
-                    pass
+        stopped = False
+        hosts = []
         try:
             try:
                 # On failure, close the terminal sink before killing/reaping its
@@ -311,32 +365,169 @@ class NativeEditor:
                     except ProcessLookupError:
                         pass
                     self.child.wait(timeout=3)
-            finally:
+                hosts = self.capture_hosts() if self.persistent else []
                 if self.persistent:
                     # A detached host has a separate process group; explicitly stop
                     # only this isolated workspace before removing its state.
-                    result = subprocess.run([os.environ["RUNYTE_BIN"], "--config", str(self.config),
-                                             "--session-stop", str(self.project), "--force"],
-                                            cwd=self.project, env=self.environment, capture_output=True,
-                                            text=True, timeout=10)
-                    deadline = time.monotonic() + 10
-                    while host_pids:
-                        for pid in list(host_pids):
-                            process = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
-                                                     capture_output=True, text=True, timeout=2)
-                            state = process.stdout.strip()
-                            if process.returncode == 1 or state.startswith("Z"):
-                                host_pids.remove(pid)
-                            elif process.returncode != 0:
-                                raise RuntimeError(f"Cannot observe fixture host exit: {process.stderr}")
-                        if host_pids:
-                            if time.monotonic() >= deadline:
-                                raise TimeoutError("Fixture persistent host did not exit after stop")
-                            time.sleep(0.05)
-                    if exception_type is None:
-                        self.test.assertEqual(result.returncode, 0, result.stderr)
+                    result = self.stop_host()
+                    self.wait_for_hosts(hosts)
+            except BaseException:
+                if self.persistent and not hosts:
+                    raise RuntimeError("Cannot verify detached fixture host after failed stop")
+                for host in hosts:
+                    host.terminate()
+                self.wait_for_hosts(hosts, timeout=3)
+                stopped = self.child is None or self.child.poll() is not None
+                raise
+            stopped = True
+            if self.persistent and exception_type is None:
+                self.test.assertEqual(result.returncode, 0, result.stderr)
+        except BaseException as error:
+            if not stopped:
+                raise RuntimeError(f"Native fixture cleanup incomplete; retained {self.root}: {error}") from error
+            raise
         finally:
-            self.temporary.cleanup()
+            if stopped:
+                self.temporary.cleanup()
+
+    def host_commands(self):
+        # The detached host uses its resolved executable and project paths.
+        # Accept either spelling of /tmp versus /private/tmp on macOS.
+        paths = [Path(os.environ["RUNYTE_BIN"]), self.project, self.config]
+        spellings = [{str(path.absolute()), str(path.resolve())} for path in paths]
+        return {f"{binary} --serve --detached-host --project-root {project} --config {config}"
+                for binary, project, config in itertools.product(*spellings)}
+
+    def capture_hosts(self):
+        pids = set()
+        for endpoint in self.root.rglob("endpoint.json"):
+            try:
+                pids.add(int(json.loads(endpoint.read_text())["pid"]))
+            except FileNotFoundError:
+                pass
+        commands = self.host_commands()
+        return [FixtureHost(pid, commands) for pid in pids]
+
+    def stop_host(self):
+        return subprocess.run([os.environ["RUNYTE_BIN"], "--config", str(self.config),
+                               "--session-stop", str(self.project), "--force"],
+                              cwd=self.project, env=self.environment, capture_output=True,
+                              text=True, timeout=10)
+
+    def wait_for_hosts(self, hosts, timeout=10):
+        deadline = time.monotonic() + timeout
+        while any(host.alive() for host in hosts):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Fixture persistent host did not exit after stop")
+            time.sleep(0.05)
+
+
+class NativeFixtureTests(unittest.TestCase):
+    """Failure cleanup uses an installed sleeping process, never generated code."""
+    def fixture(self):
+        editor = NativeEditor(self, persistent=True)
+        self.addCleanup(shutil.rmtree, editor.root, ignore_errors=True)
+        process = subprocess.Popen([shutil.which("sleep"), "30"])
+        self.addCleanup(self.reap, process)
+        (editor.root / "endpoint.json").write_text(json.dumps({"pid": process.pid}))
+        # Exercise the same exact-command verification with an installed tool.
+        editor.host_commands = lambda: {" ".join(process.args)}
+        editor.stop_host = self.stop_timeout
+        return editor, process
+
+    @staticmethod
+    def reap(process):
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=3)
+
+    @staticmethod
+    def stop_timeout():
+        raise subprocess.TimeoutExpired("fixture session stop", 10)
+
+    @unittest.skipUnless(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"),
+                         "safe fallback termination requires Linux pidfds")
+    def test_stop_timeout_terminates_verified_host_before_removing_files(self):
+        editor, process = self.fixture()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            editor.__exit__(AssertionError)
+        process.wait(timeout=3)
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+        self.assertFalse(editor.root.exists())
+
+    @unittest.skipUnless(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"),
+                         "safe fallback termination requires Linux pidfds")
+    def test_exit_wait_timeout_terminates_verified_host(self):
+        editor, process = self.fixture()
+        editor.stop_host = lambda: subprocess.CompletedProcess([], 0, "", "")
+        wait_for_hosts = editor.wait_for_hosts
+        first_wait = True
+
+        def wait(hosts, timeout=10):
+            nonlocal first_wait
+            if first_wait:
+                first_wait = False
+                raise TimeoutError("injected host exit timeout")
+            wait_for_hosts(hosts, timeout)
+
+        editor.wait_for_hosts = wait
+        with self.assertRaisesRegex(TimeoutError, "injected host exit timeout"):
+            editor.__exit__(AssertionError)
+        process.wait(timeout=3)
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+        self.assertFalse(editor.root.exists())
+
+    def test_unverified_process_survives_and_retained_files_survive_gc(self):
+        editor, process = self.fixture()
+        editor.host_commands = lambda: {"not the fixture host command"}
+        root = editor.root
+        with self.assertRaisesRegex(RuntimeError, "retained .*unverified fixture host"):
+            editor.__exit__(AssertionError)
+        self.assertIsNone(process.poll())
+        del editor
+        gc.collect()
+        self.assertTrue(root.exists())
+
+    def test_missing_safe_handle_retains_live_host_files(self):
+        editor, process = self.fixture()
+        root = editor.root
+        with patch.object(os, "pidfd_open", None, create=True):
+            with self.assertRaisesRegex(RuntimeError, "retained .*No safe termination handle"):
+                editor.__exit__(AssertionError)
+        self.assertIsNone(process.poll())
+        del editor
+        gc.collect()
+        self.assertTrue(root.exists())
+
+    def test_changed_process_identity_is_never_signalled(self):
+        editor, process = self.fixture()
+        host = FixtureHost(process.pid, editor.host_commands())
+        replacement = ("different start time", host.identity[1])
+        with patch.object(host, "snapshot", return_value=replacement):
+            with patch.object(signal, "pidfd_send_signal", create=True) as send_signal:
+                host.terminate()
+                send_signal.assert_not_called()
+        self.assertIsNone(process.poll())
+        self.reap(process)
+        editor.temporary.cleanup()
+
+    def test_capture_failure_still_closes_and_reaps_the_frontend(self):
+        editor, host = self.fixture()
+        frontend = subprocess.Popen([shutil.which("sleep"), "30"], start_new_session=True)
+        self.addCleanup(self.reap, frontend)
+        editor.child = frontend
+        master, writer = os.pipe()
+        os.close(writer)
+        editor.master = master
+        with patch.object(editor, "capture_hosts", side_effect=RuntimeError("injected observation failure")):
+            with self.assertRaisesRegex(RuntimeError, "retained .*Cannot verify detached fixture host"):
+                editor.__exit__(AssertionError)
+        self.assertEqual(frontend.returncode, -signal.SIGKILL)
+        self.assertIsNone(editor.master)
+        with self.assertRaises(OSError):
+            os.fstat(master)
+        self.assertIsNone(host.poll())
+        self.assertTrue(editor.root.exists())
 
 
 class NativeTests(unittest.TestCase):
