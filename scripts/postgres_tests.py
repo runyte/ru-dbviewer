@@ -114,5 +114,6 @@ def main():
         create_database(root, port)
         env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
         subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
+        subprocess.run(['python3', 'tests/postgres_wire.py'], cwd=ROOT, env=env, check=True)
 
 if __name__=='__main__':main()

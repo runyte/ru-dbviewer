@@ -76,6 +76,7 @@ def main():
                    "DBVIEWER_TEST_SOCKET": str(sockets)}
             subprocess.run(["cargo", "test", "--locked", "--test", "databases", "postgres_",
                             "--", "--ignored"], cwd=ROOT, env=env, check=True)
+            subprocess.run(["python3", "tests/postgres_wire.py"], cwd=ROOT, env=env, check=True)
         finally:
             if container:
                 run(["docker", "rm", "--force", "--volumes", container])

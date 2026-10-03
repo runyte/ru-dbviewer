@@ -204,7 +204,12 @@ impl App {
                 }
                 return self.password(&ctx, p, false).await;
             }
-            Input::Password(p, write) => {
+            Input::Password(p, write, generation) => {
+                if self.connections.get(p.name()).map(|c| c.generation) != generation {
+                    return Err(
+                        "Connection changed; choose the profile or access mode again".into(),
+                    );
+                }
                 return self.connect(&ctx, p, write, value("password")).await;
             }
             Input::Use(buffer) => {

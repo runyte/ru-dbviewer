@@ -175,7 +175,7 @@ enum Input {
         choices: Vec<(String, String)>,
     },
     Postgres,
-    Password(Profile, bool),
+    Password(Profile, bool, Option<u64>),
     Use(String),
     ProfileActions {
         source: String,

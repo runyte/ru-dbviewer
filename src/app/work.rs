@@ -73,11 +73,12 @@ impl App {
                     .map_err(|_| "Password environment variable is unavailable")?;
                 return self.connect(ctx, p, writable, password).await;
             }
+            let generation = self.connections.get(p.name()).map(|c| c.generation);
             self.form(
                 ctx,
                 "PostgreSQL password (empty for socket/certificate auth)",
                 vec![field("password", "Password", "secret", false)],
-                Input::Password(p, writable),
+                Input::Password(p, writable, generation),
             )
             .await?;
             Ok(None)
