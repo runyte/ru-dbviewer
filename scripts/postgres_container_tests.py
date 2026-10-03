@@ -12,7 +12,7 @@ import socket
 import subprocess
 import tempfile
 
-from postgres_tests import ROOT
+from postgres_tests import ROOT, create_certificates
 
 
 def run(command):
@@ -34,20 +34,7 @@ def main():
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
-        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-keyout", root / "ca.key", "-out", root / "ca.crt",
-             "-days", "1", "-subj", "/CN=dbviewer-test-ca"])
-        for name, subject, usage in [("server", "localhost", "serverAuth"),
-                                     ("client", "dbviewer_cert", "clientAuth")]:
-            run(["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout",
-                 root / f"{name}.key", "-out", root / f"{name}.csr", "-subj", f"/CN={subject}"])
-            (root / f"{name}.ext").write_text(
-                "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n"
-                f"extendedKeyUsage={usage}\nsubjectAltName=DNS:{subject}\n")
-            run(["openssl", "x509", "-req", "-in", root / f"{name}.csr",
-                 "-CA", root / "ca.crt", "-CAkey", root / "ca.key", "-CAcreateserial",
-                 "-out", root / f"{name}.crt", "-days", "1", "-extfile", root / f"{name}.ext"])
-            (root / f"{name}.key").chmod(0o600)
+        create_certificates(root)
         (root / "password").write_text("dbviewer-test-only\n")
         (root / "password").chmod(0o600)
         (root / "postgresql.conf").write_text(
