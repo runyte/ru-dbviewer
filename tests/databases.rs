@@ -261,6 +261,62 @@ async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
     assert!(tables.iter().any(|t| t.name == "sqlite_sequence"));
 }
 #[tokio::test]
+async fn sqlite_stale_browse_columns_fail_instead_of_becoming_literals() {
+    use ru_dbviewer::browse::{Browse, Filter, Operator};
+    let (_dir, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup.execute_batch("CREATE TABLE stale_columns(id INTEGER PRIMARY KEY, \"odd\"\"field\" TEXT); INSERT INTO stale_columns VALUES(1,'original')").unwrap();
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "main".into(),
+        name: "stale_columns".into(),
+        kind: "table".into(),
+    };
+    let original = db.browse(&table, 0, token()).await.unwrap();
+    let mut browse = Browse {
+        columns: original.columns,
+        ..Browse::default()
+    };
+    assert_eq!(
+        db.browse_with(&table, 0, &browse, token())
+            .await
+            .unwrap()
+            .rows[0][1]
+            .text
+            .as_deref(),
+        Some("original")
+    );
+    setup
+        .execute_batch("ALTER TABLE stale_columns DROP COLUMN \"odd\"\"field\"")
+        .unwrap();
+    assert!(db.browse_with(&table, 0, &browse, token()).await.is_err());
+    browse.selected = vec![0];
+    browse.filters.push(Filter {
+        column: 1,
+        op: Operator::Equal,
+        value: "odd\"field".into(),
+        enabled: true,
+    });
+    for literals in [false, true] {
+        let (sql, parameters) = browse
+            .compile(&table, 0, &["id".into()], false, literals)
+            .unwrap();
+        let prepared = setup.prepare(&sql);
+        assert!(
+            prepared.is_err(),
+            "A stale filter must fail even when its field is not projected: {parameters:?}"
+        );
+        if literals {
+            assert!(db.execute(sql, false, token(), 5).await.is_err());
+        }
+    }
+}
+#[tokio::test]
 async fn sqlite_read_only_rejects_writes_and_escape() {
     let (_d, p) = fixture();
     let db = Database::open(&p, false, String::new()).await.unwrap();

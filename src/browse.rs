@@ -147,6 +147,8 @@ impl Browse {
         } else {
             self.selected.clone()
         };
+        let table = format!("{}.{}", query::ident(&t.schema), query::ident(&t.name));
+        let field = |name: &str| format!("{table}.{}", query::ident(name));
         let projection = selected
             .iter()
             .map(|i| {
@@ -155,13 +157,9 @@ impl Browse {
                     .ok_or("Invalid selected column")
                     .map(|c| {
                         if pg && !literals {
-                            format!(
-                                "{}::text AS {}",
-                                query::ident(&c.name),
-                                query::ident(&c.name)
-                            )
+                            format!("{}::text AS {}", field(&c.name), query::ident(&c.name))
                         } else {
-                            query::ident(&c.name)
+                            field(&c.name)
                         }
                     })
             })
@@ -177,7 +175,7 @@ impl Browse {
         for f in self.filters.iter().filter(|f| f.enabled) {
             self.check_filter(f)?;
             let col = &self.columns[f.column];
-            let column = query::ident(&col.name);
+            let column = field(&col.name);
             if matches!(f.op, Operator::Null | Operator::NotNull) {
                 conditions.push(format!(
                     "{column} IS {}NULL",
@@ -226,28 +224,19 @@ impl Browse {
         if let Some((index, desc)) = self.sort {
             let col = self.columns.get(index).ok_or("Invalid sort column")?;
             order.push(format!(
-                "{}.{}.{} {}",
-                query::ident(&t.schema),
-                query::ident(&t.name),
-                query::ident(&col.name),
+                "{} {}",
+                field(&col.name),
                 if desc { "DESC" } else { "ASC" }
             ));
         }
         for key in keys {
             if self.sort.is_none_or(|(i, _)| self.columns[i].name != *key) {
-                order.push(format!(
-                    "{}.{}.{}",
-                    query::ident(&t.schema),
-                    query::ident(&t.name),
-                    query::ident(key)
-                ));
+                order.push(field(key));
             }
         }
         Ok((
             format!(
-                "SELECT {projection} FROM {}.{}{}{} LIMIT {} OFFSET {}",
-                query::ident(&t.schema),
-                query::ident(&t.name),
+                "SELECT {projection} FROM {table}{}{} LIMIT {} OFFSET {}",
                 if conditions.is_empty() {
                     String::new()
                 } else {
