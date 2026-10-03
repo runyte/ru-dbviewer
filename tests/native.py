@@ -440,6 +440,10 @@ class NativeTests(unittest.TestCase):
             # The host lists the live menu below the prose, labels and groups
             # included; this row appears nowhere else.
             editor.find("Page size — Set browse page size")
+            editor.wait_for(lambda: editor.shows("match 1/1 (all selected): Page size"))
+            # Selecting a long match can scroll the help document horizontally,
+            # so locate its group independently instead of assuming it is visible.
+            editor.find("Columns and paging")
             editor.wait_for(lambda: editor.shows("Columns and paging"))
             editor.send(b"q")
             editor.wait_for(lambda: editor.shows("[rows]"))
