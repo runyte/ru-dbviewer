@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::Result;
 use sqlparser::{
-    ast::{BinaryOperator, Expr, SetExpr, Statement},
+    ast::{BinaryOperator, Expr, SetExpr, Statement, Value},
     dialect::{Dialect, PostgreSqlDialect, SQLiteDialect},
     keywords::Keyword,
     parser::{Parser, ParserError},
@@ -13,6 +13,9 @@ pub const MAX_SQL_TOKENS: usize = 16 * 1024;
 // sqlparser 0.59's SQLite infix hook unwraps malformed MATCH/REGEXP operands.
 // Forward its other overrides and identity so SQLite-specific parser paths keep
 // working, while malformed input stays a redacted validation error, not a panic.
+// This dialect builds a private classification-only AST: MATCH/REGEXP replace
+// the already parsed left subtree rather than recursively cloning it. Never
+// render or execute this AST; execution always uses the original captured SQL.
 #[derive(Debug)]
 struct CheckedSqliteDialect(SQLiteDialect);
 
@@ -55,7 +58,7 @@ impl Dialect for CheckedSqliteDialect {
     fn parse_infix(
         &self,
         parser: &mut Parser,
-        expr: &Expr,
+        _expr: &Expr,
         _precedence: u8,
     ) -> Option<std::result::Result<Expr, ParserError>> {
         let op = if parser.parse_keyword(Keyword::MATCH) {
@@ -66,7 +69,7 @@ impl Dialect for CheckedSqliteDialect {
             return None;
         };
         Some(parser.parse_expr().map(|right| Expr::BinaryOp {
-            left: Box::new(expr.clone()),
+            left: Box::new(Expr::Value(Value::Null.into())),
             op,
             right: Box::new(right),
         }))
@@ -93,6 +96,8 @@ impl Dialect for CheckedSqliteDialect {
     }
 }
 
+// Only statement/body variants may be inspected: SQLite expression subtrees
+// can contain placeholders. This AST must not supply execution SQL or values.
 fn statements(sql: &str, postgres: bool) -> Result<Vec<Statement>> {
     if sql.len() > MAX_SQL || sql.contains('\0') {
         return Err("SQL exceeds the input limit or contains NUL".into());
@@ -225,11 +230,38 @@ mod tests {
             "DELETE FROM t WHERE value REGEXP '^a'",
         ] {
             let expected = Parser::parse_sql(&original, sql).unwrap();
-            assert_eq!(Parser::parse_sql(&checked, sql).unwrap(), expected);
+            let actual = Parser::parse_sql(&checked, sql).unwrap();
+            if sql.contains("MATCH") || sql.contains("REGEXP") {
+                assert_eq!(actual.len(), expected.len());
+                assert_eq!(
+                    std::mem::discriminant(&actual[0]),
+                    std::mem::discriminant(&expected[0])
+                );
+            } else {
+                assert_eq!(actual, expected);
+            }
             assert!(validate(sql, false).is_ok(), "{sql}");
         }
         assert!(affects_rows("UPDATE t SET value = body MATCH 'term'"));
         assert!(affects_rows("DELETE FROM t WHERE value REGEXP '^a'"));
+        assert!(affects_rows(
+            "WITH chosen AS (SELECT id FROM t WHERE value REGEXP '^a') UPDATE t SET value='changed' WHERE id IN (SELECT id FROM chosen)"
+        ));
+        assert!(!affects_rows(
+            "WITH chosen AS (SELECT id FROM t WHERE value MATCH 'term') SELECT * FROM chosen"
+        ));
+    }
+
+    #[test]
+    fn sqlite_infix_validation_does_not_clone_deep_left_subtrees() {
+        let left = vec!["1"; MAX_SQL_TOKENS / 2 - 1].join("+");
+        for op in ["MATCH", "REGEXP"] {
+            // Exactly the token limit, with a deep left subtree. The lower
+            // precedence operator must not recursively clone that subtree.
+            let sql = format!("SELECT {left} {op} 1");
+            assert!(validate(&sql, false).is_ok());
+            assert!(!affects_rows(&sql));
+        }
     }
 
     #[test]
