@@ -462,10 +462,12 @@ impl App {
                     )
                     .await?;
                 } else {
-                    let Content::Filters { draft, .. } = &self.views[&view].content else {
+                    let content = &self.views.get(&view).ok_or("Filters closed")?.content;
+                    let Content::Filters { draft, .. } = content else {
                         return Err("Filters closed".into());
                     };
-                    let choices = crate::browse::operators(&draft.columns[column].kind);
+                    let field = draft.columns.get(column).ok_or("Filter column changed")?;
+                    let choices = crate::browse::operators(&field.kind);
                     self.pick(
                         ctx,
                         "Filter operator",

@@ -26,6 +26,15 @@ class InteractiveTests(unittest.TestCase):
  def filter(self,view,column,op,value=None):
   self.invoke('add-filter',view);self.choice(column);self.submit(choice=op)
   if value is not None:self.submit(value=value)
+ def test_closed_filter_picker_is_rejected_without_stopping_plugin(self):
+  rows=self.rows();h=self.h;self.invoke('filters',rows);self.invoke('add-filter',h.active)
+  choice=next(c for c in list(h.inputs.values())[-1]['choices'] if 'name' in c)
+  h.send({'type':'event','event':'view.closed','sequence':'1','data':{'view':h.active}})
+  h.views.clear();h.revisions.clear()
+  result=h.submit({'choice':choice})
+  self.assertIn('Filters closed',result['error']['message'])
+  self.invoke('open');self.assertEqual(h.views[h.active]['title'],'[databases]')
+
  def test_reassociated_sql_uses_current_connection_generation(self):
   catalog=self.connect();h=self.h;self.invoke('query',catalog);buffer=next(reversed(h.buffers))
   self.invoke('mode',catalog);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()
