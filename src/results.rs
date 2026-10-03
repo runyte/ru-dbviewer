@@ -188,15 +188,15 @@ fn prefix_end(text: &str, limit: usize) -> usize {
     end
 }
 pub fn escape(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                c.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![c]
-            }
-        })
-        .collect()
+    let mut output = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            output.extend(c.escape_default());
+        } else {
+            output.push(c);
+        }
+    }
+    output
 }
 #[derive(Clone, Debug, Default)]
 pub struct Data {
