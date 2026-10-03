@@ -29,3 +29,20 @@ fn invalid_configuration_arguments_fail() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_arguments_fail_without_exposing_the_argument() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    for prefix in [vec![], vec!["--print-config", "--plugin-id"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ru-dbviewer"))
+            .args(prefix)
+            .arg(OsString::from_vec(b"\xffprivate-fixture-argument".to_vec()))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"Arguments must be valid UTF-8\n");
+    }
+}

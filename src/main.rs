@@ -2,7 +2,13 @@
 use ru_dbviewer::{CAPABILITIES, HOST_RANGE, app::App, protocol::Rpc};
 use serde_json::json;
 fn main() {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = std::env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .unwrap_or_else(|_| fail("Arguments must be valid UTF-8"))
+        })
+        .collect::<Vec<_>>();
     if !args.is_empty() {
         match args[0].as_str() {
             "--help" if args.len() == 1 => {
@@ -33,6 +39,9 @@ fn main() {
                 }
                 let executable =
                     std::env::current_exe().unwrap_or_else(|_| fail("Cannot locate executable"));
+                let executable = executable
+                    .to_str()
+                    .unwrap_or_else(|| fail("Executable path must be valid UTF-8"));
                 println!("{}",serde_json::to_string_pretty(&json!({"plugins":[{"id":id,"enabled":true,"api":"runyte-1","runyte":HOST_RANGE,"executable":executable,"args":[],"capabilities":CAPABILITIES,"bindings":{"back":"-"}}]})).unwrap());
                 return;
             }
