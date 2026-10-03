@@ -400,17 +400,7 @@ impl App {
         let permit = self.path_slots.clone().try_acquire_owned().ok();
         let message = message.clone();
         tokio::spawn(async move {
-            let reply=tokio::task::spawn_blocking(move||{
-                let available=permit.is_some();let _permit=permit;
-                let ctx=&message["params"];
-                let name=ctx["values"]["name"].as_str().unwrap_or("");
-                let path=ctx["values"]["path"].as_str().unwrap_or("");
-                let valid_name=!name.trim().is_empty()&&name.len()<=64&&!name.chars().any(char::is_control)&&!names.iter().any(|n|n==name);
-                let valid_path=available&&std::env::current_dir().ok().is_some_and(|root|crate::paths::resolve(&root,path).is_ok());
-                let fields=ctx["fields"].as_array().map(|a|a.iter().map(|f|json!({"field":f,"status":if !sqlite || !available {"unavailable"}else if (f=="name"&&valid_name)||(f=="path"&&valid_path){"valid"}else{"invalid"}})).collect::<Vec<_>>()).unwrap_or_default();
-                json!({"type":"response","id":message["id"],"result":{"kind":"validation","surface":ctx["surface"],"revision":ctx["revision"],"fields":fields}})
-            }).await;
-            if let Ok(reply) = reply {
+            if let Ok(reply) = validation_reply(message, sqlite, names, permit).await {
                 let _ = rpc.send(reply);
             }
         });
@@ -552,5 +542,106 @@ impl App {
                 self.password(ctx, p, false).await
             }
         }
+    }
+}
+
+async fn validation_reply(
+    message: Value,
+    sqlite: bool,
+    names: Vec<String>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<Value> {
+    if !sqlite || permit.is_none() {
+        // Denied work must not wait behind admitted filesystem/database tasks.
+        return Ok(validation_response(&message, |_| "unavailable"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let ctx = &message["params"];
+        let name = ctx["values"]["name"].as_str().unwrap_or("");
+        let path = ctx["values"]["path"].as_str().unwrap_or("");
+        let valid_name = !name.trim().is_empty()
+            && name.len() <= 64
+            && !name.chars().any(char::is_control)
+            && !names.iter().any(|n| n == name);
+        let valid_path = std::env::current_dir()
+            .ok()
+            .is_some_and(|root| crate::paths::resolve(&root, path).is_ok());
+        validation_response(&message, |field| {
+            if (field == "name" && valid_name) || (field == "path" && valid_path) {
+                "valid"
+            } else {
+                "invalid"
+            }
+        })
+    })
+    .await
+    .map_err(|_| "Validation worker stopped".into())
+}
+
+fn validation_response(message: &Value, status: impl Fn(&Value) -> &str) -> Value {
+    let ctx = &message["params"];
+    let fields = ctx["fields"]
+        .as_array()
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| json!({"field":field,"status":status(field)}))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({"type":"response","id":message["id"],"result":{"kind":"validation","surface":ctx["surface"],"revision":ctx["revision"],"fields":fields}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_validation_does_not_wait_for_blocking_workers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (started, waiting) = tokio::sync::oneshot::channel();
+            let (release, stop) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                stop.recv().unwrap();
+            });
+            waiting.await.unwrap();
+            let slots = Arc::new(tokio::sync::Semaphore::new(2));
+            let _first = slots.clone().acquire_owned().await.unwrap();
+            let _second = slots.clone().acquire_owned().await.unwrap();
+            let message = json!({
+                "type":"request", "id":"h:validation", "params":{
+                    "surface":"i:fixture", "revision":"r:fixture", "fields":["name","path"],
+                    "values":{"name":"fixture","path":"unused"}
+                }
+            });
+            let result = tokio::time::timeout(
+                Duration::from_millis(500),
+                validation_reply(message, true, vec![], slots.try_acquire_owned().ok()),
+            )
+            .await;
+            // Always release the checked-in blocking fixture before asserting.
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let reply = result
+                .expect("unavailable validation waited for a worker")
+                .unwrap();
+            assert_eq!(reply["id"], "h:validation");
+            assert_eq!(reply["result"]["surface"], "i:fixture");
+            assert_eq!(reply["result"]["revision"], "r:fixture");
+            assert_eq!(
+                reply["result"]["fields"],
+                json!([
+                    {"field":"name","status":"unavailable"},
+                    {"field":"path","status":"unavailable"}
+                ])
+            );
+        });
     }
 }
