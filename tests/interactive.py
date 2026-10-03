@@ -47,6 +47,34 @@ class InteractiveTests(unittest.TestCase):
   self.invoke('run',buffer='b:fixture-0');h.wait_jobs()
   self.assertEqual(h.views[h.active]['rows'][0]['cells'][0]['text'],'42')
 
+ def test_failed_filter_admission_preserves_retained_row_options(self):
+  rows=self.rows();h=self.h;original=h.views[rows]['rows']
+  self.invoke('filters',rows);self.filter(h.active,'name','equals','absent')
+  h.fail_once='job.create';self.assertIn('error',h.invoke('apply-filters',h.active))
+  self.invoke('back',h.active)
+  self.assertEqual(h.views[rows]['rows'],original)
+  self.assertIn('no active filters',str(h.views[rows]))
+  self.assertNotIn('name equals absent',str(h.views[rows]))
+
+ def test_failed_filter_read_preserves_retained_row_options(self):
+  rows=self.rows();h=self.h;original=h.views[rows]['rows']
+  self.invoke('filters',rows);self.filter(h.active,'name','equals','absent')
+  with closing(sqlite3.connect(self.path)) as c:c.execute('DROP TABLE items');c.commit()
+  self.invoke('apply-filters',h.active);h.wait_jobs()
+  self.invoke('open',rows);self.invoke('back',h.active)
+  self.assertEqual(h.views[rows]['rows'],original)
+  self.assertIn('no active filters',str(h.views[rows]))
+  self.assertNotIn('name equals absent',str(h.views[rows]))
+
+ def test_refused_sort_and_page_size_keep_existing_browse_options(self):
+  rows=self.rows();h=self.h;original=h.views[rows]
+  self.invoke('page-size',rows);h.fail_once='job.create'
+  self.assertIn('error',h.submit({'size':'1'}))
+  self.invoke('sort',rows);self.choice('name');h.fail_once='job.create'
+  self.assertIn('error',h.submit({'choice':'Descending'}))
+  self.invoke('open',rows);self.invoke('back',h.active)
+  self.assertEqual(h.views[rows],original)
+
  def test_reassociated_sql_uses_current_connection_generation(self):
   catalog=self.connect();h=self.h;self.invoke('query',catalog);buffer=next(reversed(h.buffers))
   self.invoke('mode',catalog);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()

@@ -233,7 +233,14 @@ enum Work {
     Path(PathCompletion),
     Connect(Profile, bool, Result<Database>),
     Catalog(String, Vec<Table>, bool),
-    Data(String, Data, Option<Table>, usize, String),
+    Data(
+        String,
+        Data,
+        Option<Table>,
+        usize,
+        String,
+        Option<crate::browse::Browse>,
+    ),
     Settled(String, bool),
     Failed(String, String, bool),
 }

@@ -136,7 +136,12 @@ impl App {
         )
         .await
     }
-    async fn reload_browse(&mut self, ctx: &Value, id: &str) -> Result<Option<String>> {
+    async fn reload_browse(
+        &mut self,
+        ctx: &Value,
+        id: &str,
+        browse: crate::browse::Browse,
+    ) -> Result<Option<String>> {
         let v = self
             .views
             .get(id)
@@ -153,9 +158,16 @@ impl App {
         target["view"] = json!(id);
         target["model_revision"] = json!(v.revision);
         target["command"] = json!("refresh");
-        let result = self
-            .load(&target, name.clone(), Some(table.clone()), 0, false, false)
-            .await?;
+        let name = name.clone();
+        let table = table.clone();
+        // load captures these options before admitting its worker. Keep the old
+        // page's data and options paired until that worker returns a result.
+        let previous = std::mem::replace(&mut self.views.get_mut(id).unwrap().browse, browse);
+        let result = self.load(&target, name, Some(table), 0, false, false).await;
+        if let Some(view) = self.views.get_mut(id) {
+            view.browse = previous;
+        }
+        let result = result?;
         self.show_page(ctx, id).await?;
         Ok(result)
     }
@@ -227,11 +239,12 @@ impl App {
                 let Content::Filters { source, draft, .. } = content else {
                     return Err("Open filters first".into());
                 };
-                let browse = &mut self
+                let mut browse = self
                     .views
-                    .get_mut(&source)
+                    .get(&source)
                     .ok_or("Browse parent closed")?
-                    .browse;
+                    .browse
+                    .clone();
                 if browse
                     .columns
                     .iter()
@@ -242,7 +255,7 @@ impl App {
                 }
                 browse.filters = draft.filters;
                 browse.any = draft.any;
-                return self.reload_browse(ctx, &source).await;
+                return self.reload_browse(ctx, &source, browse).await;
             }
             "sort" => {
                 self.field_picker(ctx, id, None, true, String::new(), 0)
@@ -550,13 +563,14 @@ impl App {
                 self.publish(&id, content).await?;
             }
             Input::SortDirection(id, column) => {
-                self.views.get_mut(&id).ok_or("Rows closed")?.browse.sort = match choice {
+                let mut browse = self.views.get(&id).ok_or("Rows closed")?.browse.clone();
+                browse.sort = match choice {
                     "Ascending" => Some((column, false)),
                     "Descending" => Some((column, true)),
                     "Primary keys only" => None,
                     _ => return Err("Choose sort direction".into()),
                 };
-                return self.reload_browse(ctx, &id).await;
+                return self.reload_browse(ctx, &id, browse).await;
             }
             Input::PageSize(id) => {
                 let size = ctx["values"]["size"]
@@ -567,12 +581,9 @@ impl App {
                 if !(1..=crate::browse::MAX_PAGE_SIZE).contains(&size) {
                     return Err("Use a page size from 1 to 1000".into());
                 }
-                self.views
-                    .get_mut(&id)
-                    .ok_or("Rows closed")?
-                    .browse
-                    .page_size = size;
-                return self.reload_browse(ctx, &id).await;
+                let mut browse = self.views.get(&id).ok_or("Rows closed")?.browse.clone();
+                browse.page_size = size;
+                return self.reload_browse(ctx, &id, browse).await;
             }
             _ => return Err("Input expired".into()),
         }

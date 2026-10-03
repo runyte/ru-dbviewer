@@ -211,7 +211,10 @@ impl App {
                 let name = value("choice");
                 self.ready(&name)?;
                 if self.buffers.len() >= 256 && !self.buffers.contains_key(&buffer) {
-                    return Err("SQL association limit reached; restart the plugin after saving documents".into());
+                    return Err(
+                        "SQL association limit reached; restart the plugin after saving documents"
+                            .into(),
+                    );
                 }
                 self.buffers
                     .insert(buffer, (name.clone(), self.connections[&name].generation));

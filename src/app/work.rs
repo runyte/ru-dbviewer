@@ -282,7 +282,7 @@ impl App {
             let result = db.execute(intent.sql, write, cancel.clone(), seconds).await;
             let result = match result {
                 Ok(data) if !cancel.is_cancelled() => {
-                    Work::Data(intent.name, data, None, 0, intent.source)
+                    Work::Data(intent.name, data, None, 0, intent.source, None)
                 }
                 Ok(_) => {
                     let settled = db.settle(false).await;
@@ -394,6 +394,7 @@ impl App {
                         if schema { None } else { Some(table) },
                         if schema { 0 } else { page },
                         source,
+                        (!schema).then_some(browse),
                     )
                 })
             } else {

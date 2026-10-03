@@ -118,7 +118,7 @@ impl App {
                 )
                 .await?;
             }
-            Work::Data(name, data, table, page, source) => {
+            Work::Data(name, data, table, page, source, browse) => {
                 let cancelled = self
                     .connections
                     .get(&name)
@@ -162,6 +162,13 @@ impl App {
                     .is_some_and(|c| !c.db.usable() && !c.pending)
                 {
                     self.connections.remove(&name);
+                }
+                if let Some(v) = self.views.get_mut(&done.view)
+                    && let Some(mut browse) = browse
+                {
+                    // Display-column changes are independent of the in-flight read.
+                    browse.selected = v.browse.selected.clone();
+                    v.browse = browse;
                 }
                 if let Some(v) = self.views.get_mut(&done.view)
                     && table.is_some()
