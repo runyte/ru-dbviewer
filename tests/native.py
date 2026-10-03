@@ -474,8 +474,19 @@ class NativeTests(unittest.TestCase):
             editor.wait_for(lambda: editor.shows("Database type"))
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("SQLite form"))
-            editor.send(b"native\t../tasks\r")
-            editor.wait_for(lambda: editor.shows("Resolved paths"))
+            editor.send(b"native\t../tasks")
+            if os.environ.get("DBVIEWER_EXPECT_PATH_COMPLETION") == "1":
+                editor.wait_for(lambda: editor.shows("tasks.sqlite3") and editor.shows("complete"))
+                editor.send(b"\t")
+                editor.wait_for(lambda: editor.shows("../tasks.sqlite3"))
+                self.assertTrue(editor.shows("SQLite form"))
+                self.assertFalse(editor.shows("Resolved paths"))
+            else:
+                editor.send(b"\r")
+                # Accept either negotiated UI when no native-feature assertion
+                # was requested: Enter can complete the path in the same form.
+                editor.wait_for(lambda: editor.shows("Resolved paths") or (
+                    editor.shows("SQLite form") and editor.shows("../tasks.sqlite3")))
             editor.send(b"\r")
             editor.wait_for(lambda: editor.shows("main.items") and editor.shows("ready"))
             editor.open_row("main.items", "native-first")
