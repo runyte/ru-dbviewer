@@ -133,6 +133,7 @@ impl Sqlite {
                         data.truncated = true;
                         break;
                     }
+                    let checkpoint = capture.checkpoint();
                     let mut cells = Vec::with_capacity(count);
                     for i in 0..count {
                         capture.check()?;
@@ -152,6 +153,7 @@ impl Sqlite {
                         cells.push(cell);
                     }
                     if !data.push(cells) {
+                        capture.discard_since(checkpoint)?;
                         break;
                     }
                 }

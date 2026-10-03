@@ -255,7 +255,8 @@ impl Postgres {
                         data.truncated = true;
                         return Ok(data);
                     }
-                    let (next, cells) = tokio::task::spawn_blocking(move || {
+                    let (next, cells, checkpoint) = tokio::task::spawn_blocking(move || {
+                        let checkpoint = capture.checkpoint();
                         let cells = (0..row.len())
                             .map(|i| {
                                 capture.check()?;
@@ -264,13 +265,16 @@ impl Postgres {
                                     .map_err(error)
                             })
                             .collect::<Result<Vec<_>>>();
-                        (capture, cells)
+                        (capture, cells, checkpoint)
                     })
                     .await
                     .map_err(|_| "PostgreSQL capture worker stopped")?;
                     capture = next;
                     let cells = cells?;
                     if !data.push(cells) {
+                        tokio::task::spawn_blocking(move || capture.discard_since(checkpoint))
+                            .await
+                            .map_err(|_| "PostgreSQL capture worker stopped")??;
                         return Ok(data);
                     }
                 }
@@ -286,7 +290,8 @@ impl Postgres {
                             data.truncated = true;
                             return Ok(data);
                         }
-                        let (next, cells) = tokio::task::spawn_blocking(move || {
+                        let (next, cells, checkpoint) = tokio::task::spawn_blocking(move || {
+                            let checkpoint = capture.checkpoint();
                             let cells = (0..row.len())
                                 .map(|i| {
                                     capture.check()?;
@@ -295,13 +300,16 @@ impl Postgres {
                                     Ok(cell)
                                 })
                                 .collect::<Result<Vec<_>>>();
-                            (capture, cells)
+                            (capture, cells, checkpoint)
                         })
                         .await
                         .map_err(|_| "PostgreSQL capture worker stopped")?;
                         capture = next;
                         let cells = cells?;
                         if !data.push(cells) {
+                            tokio::task::spawn_blocking(move || capture.discard_since(checkpoint))
+                                .await
+                                .map_err(|_| "PostgreSQL capture worker stopped")??;
                             return Ok(data);
                         }
                     }

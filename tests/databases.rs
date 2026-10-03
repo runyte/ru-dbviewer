@@ -1679,3 +1679,76 @@ async fn sqlite_capture_deadline_rolls_back_short_statements_before_vm_progress(
     assert_eq!(data.rows[0][0].text.as_deref(), Some("2"));
     assert_eq!(storage.usage(), (0, 0));
 }
+
+async fn byte_limit_capture_contract(
+    db: &Database,
+    storage: &ru_dbviewer::result_storage::Storage,
+    bound: bool,
+) {
+    let sql = match db {
+        Database::Sqlite(_) => "WITH RECURSIVE series(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM series WHERE n<64) SELECT CASE WHEN n=1 THEN printf('%.*c',70000,'x') WHEN n=64 THEN printf('%.*c',8388608,'y') ELSE printf('%.*c',65536,'z') END FROM series ORDER BY n".into(),
+        Database::Postgres(_) => format!(
+            "SELECT CASE WHEN n=1 THEN repeat({},70000) WHEN n=64 THEN repeat('y',8388608) ELSE repeat('z',65536) END FROM generate_series(1,64) AS series(n) ORDER BY n",
+            if bound { "$1::text" } else { "'x'" }
+        ),
+    };
+    let data = match db {
+        Database::Postgres(postgres) if bound => postgres
+            .execute_bound(sql, vec!["x".into()], false, token(), 10)
+            .await
+            .unwrap(),
+        _ => db.execute(sql, false, token(), 10).await.unwrap(),
+    };
+    assert!(data.truncated);
+    assert_eq!(data.rows.len(), 63);
+    assert_eq!(
+        storage.usage(),
+        (70000, 1),
+        "the byte-cap-rejected 8 MiB row must not remain reserved"
+    );
+    assert_eq!(
+        data.rows[62][0].text.as_deref(),
+        Some("z".repeat(65536).as_str())
+    );
+    let retained = data.rows[0][0].clone();
+    assert_eq!(
+        retained.load_full().await.unwrap().unwrap(),
+        "x".repeat(70000)
+    );
+    drop(data);
+    assert_eq!(storage.usage(), (70000, 1));
+    assert_eq!(
+        retained.load_full().await.unwrap().unwrap(),
+        "x".repeat(70000)
+    );
+    drop(retained);
+    assert_eq!(storage.usage(), (0, 0));
+}
+
+#[tokio::test]
+async fn sqlite_byte_limit_reclaims_discarded_values() {
+    let (directory, profile) = fixture();
+    let storage = ru_dbviewer::result_storage::Storage::new(directory.path().into());
+    let db = Database::open_with_storage(&profile, false, String::new(), storage.clone())
+        .await
+        .unwrap();
+    byte_limit_capture_contract(&db, &storage, false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_byte_limit_reclaims_discarded_values() {
+    for bound in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = ru_dbviewer::result_storage::Storage::new(directory.path().into());
+        let db = Database::open_with_storage(
+            &postgres_profile("byte-cap"),
+            false,
+            "dbviewer-test-only".into(),
+            storage.clone(),
+        )
+        .await
+        .unwrap();
+        byte_limit_capture_contract(&db, &storage, bound).await;
+    }
+}

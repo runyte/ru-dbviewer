@@ -105,9 +105,68 @@ pub struct Capture {
     spool: Option<Arc<Spool>>,
     guard: Option<WorkGuard>,
 }
+/// A row's start in this capture. Consumed when discarding that row's suffix.
+#[derive(Debug)]
+pub(crate) struct CaptureCheckpoint {
+    spool: Option<Arc<Spool>>,
+    bytes: usize,
+}
 impl Capture {
     pub fn check(&self) -> Result<()> {
         self.guard.as_ref().map_or(Ok(()), WorkGuard::check)
+    }
+    pub(crate) fn checkpoint(&self) -> CaptureCheckpoint {
+        CaptureCheckpoint {
+            bytes: self.spool.as_ref().map_or(0, |spool| {
+                spool.state.lock().unwrap_or_else(|e| e.into_inner()).bytes
+            }),
+            spool: self.spool.clone(),
+        }
+    }
+    /// Call on a blocking worker, after dropping all values created since the
+    /// checkpoint. Earlier immutable ranges remain valid. Cleanup must run even
+    /// when the operation's cancellation/deadline guard has expired.
+    pub(crate) fn discard_since(&mut self, checkpoint: CaptureCheckpoint) -> Result<()> {
+        let Some(spool) = self.spool.as_ref() else {
+            return Ok(());
+        };
+        let Some(previous) = checkpoint.spool else {
+            // No earlier row used this file. Closing it releases both quotas,
+            // including reservations for any failed writes in the rejected row.
+            if Arc::strong_count(spool) != 1 {
+                return Err("Rejected full-value capture is still referenced".into());
+            }
+            self.spool = None;
+            return Ok(());
+        };
+        if !Arc::ptr_eq(spool, &previous) {
+            return Err("Full-value capture checkpoint does not match".into());
+        }
+        let mut state = spool.state.lock().unwrap_or_else(|e| e.into_inner());
+        if checkpoint.bytes > state.bytes {
+            return Err("Full-value capture checkpoint is no longer valid".into());
+        }
+        if checkpoint.bytes == state.bytes {
+            return Ok(());
+        }
+        state
+            .file
+            .as_ref()
+            .expect("live spool file")
+            .set_len(checkpoint.bytes as u64)
+            .map_err(|_| "Full-value temporary storage could not be truncated")?;
+        let released = state.bytes - checkpoint.bytes;
+        state.bytes = checkpoint.bytes;
+        // Failed writes stay failed; only their successfully removed reservation
+        // may be released. A failed truncate leaves all accounting untouched.
+        spool
+            .owner
+            .0
+            .usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bytes -= released;
+        Ok(())
     }
     /// Call only on a blocking worker. A failed capture never substitutes a prefix.
     pub fn store(&mut self, text: &str) -> Result<CapturedValue> {
@@ -246,6 +305,71 @@ impl CapturedValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discarded_row_reclaims_only_its_suffix_and_keeps_retained_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().into());
+        let mut capture = storage.result();
+        let first = capture.store("retained é").unwrap();
+        let checkpoint = capture.checkpoint();
+        drop(capture.store("rejected 🦀").unwrap());
+        drop(capture.store("another rejected field").unwrap());
+        capture.discard_since(checkpoint).unwrap();
+        assert_eq!(storage.usage(), ("retained é".len(), 1));
+        assert_eq!(first.read().unwrap(), "retained é");
+        assert_eq!(
+            capture
+                .spool
+                .as_ref()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .file
+                .as_ref()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .len(),
+            "retained é".len() as u64
+        );
+        let later = capture.store("later accepted").unwrap();
+        assert_eq!(first.read().unwrap(), "retained é");
+        assert_eq!(later.read().unwrap(), "later accepted");
+        drop((capture, first, later));
+        assert_eq!(storage.usage(), (0, 0));
+
+        let mut capture = storage.result();
+        let checkpoint = capture.checkpoint();
+        drop(capture.store("first row rejected").unwrap());
+        capture.discard_since(checkpoint).unwrap();
+        assert_eq!(storage.usage(), (0, 0));
+    }
+    #[test]
+    fn failed_discard_keeps_reservations_and_failed_write_state() {
+        for truncate_succeeds in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::new(dir.path().into());
+            let mut capture = storage.result();
+            let first = capture.store("stable").unwrap();
+            let checkpoint = capture.checkpoint();
+            let path = dir.path().join("readonly");
+            std::fs::write(&path, b"stable").unwrap();
+            capture.spool.as_ref().unwrap().state.lock().unwrap().file =
+                Some(File::open(&path).unwrap());
+            assert!(capture.store("failed write").is_err());
+            if truncate_succeeds {
+                capture.spool.as_ref().unwrap().state.lock().unwrap().file =
+                    Some(File::options().read(true).write(true).open(&path).unwrap());
+            }
+            assert_eq!(capture.discard_since(checkpoint).is_ok(), truncate_succeeds);
+            assert_eq!(storage.usage(), (if truncate_succeeds { 6 } else { 18 }, 1));
+            assert!(capture.store("retry").is_err());
+            assert_eq!(first.read().unwrap(), "stable");
+            drop((capture, first));
+            assert_eq!(storage.usage(), (0, 0));
+        }
+    }
     #[test]
     fn anonymous_ranges_share_one_file_and_release_on_last_reference() {
         let dir = tempfile::tempdir().unwrap();
