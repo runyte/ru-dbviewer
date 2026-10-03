@@ -103,6 +103,9 @@ impl Database {
                 "Catalog exceeds 1,000 objects; use a restricted database/schema role".into(),
             );
         }
+        if data.cells_truncated {
+            return Err("Catalog identifiers exceed the 64 KiB metadata limit".into());
+        }
         Ok(data
             .rows
             .into_iter()
@@ -132,6 +135,9 @@ impl Database {
             ),
         };
         let keys = self.raw(keys_sql, false, cancel.clone(), 30).await?;
+        if keys.truncated || keys.cells_truncated {
+            return Err("Primary-key metadata exceeds the supported result limits".into());
+        }
         Ok(keys
             .rows
             .iter()

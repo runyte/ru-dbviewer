@@ -261,6 +261,54 @@ async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
     assert!(tables.iter().any(|t| t.name == "sqlite_sequence"));
 }
 #[tokio::test]
+async fn sqlite_clipped_metadata_is_not_reused_as_an_identifier() {
+    use ru_dbviewer::{db::Table, query::ident, results::MAX_VALUE};
+    let (_dir, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    let long_name = "x".repeat(MAX_VALUE + 1);
+    setup
+        .execute_batch(&format!("CREATE TABLE {}(id INTEGER)", ident(&long_name)))
+        .unwrap();
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    assert!(db.catalog(false, token()).await.is_err());
+    setup
+        .execute_batch(&format!(
+            "DROP TABLE {}; CREATE TABLE long_key({} INTEGER PRIMARY KEY)",
+            ident(&long_name),
+            ident(&long_name)
+        ))
+        .unwrap();
+    let table = Table {
+        schema: "main".into(),
+        name: "long_key".into(),
+        kind: "table".into(),
+    };
+    assert!(db.browse_keys(&table, token()).await.is_err());
+    assert!(db.browse(&table, 0, token()).await.is_err());
+    let keys = (0..1001).map(|i| format!("k{i}")).collect::<Vec<_>>();
+    let columns = keys
+        .iter()
+        .map(|key| format!("{key} INTEGER"))
+        .collect::<Vec<_>>()
+        .join(",");
+    setup
+        .execute_batch(&format!(
+            "CREATE TABLE wide_key({columns}, PRIMARY KEY({}))",
+            keys.join(",")
+        ))
+        .unwrap();
+    let table = Table {
+        name: "wide_key".into(),
+        ..table
+    };
+    assert!(db.browse_keys(&table, token()).await.is_err());
+}
+#[tokio::test]
 async fn sqlite_stale_browse_columns_fail_instead_of_becoming_literals() {
     use ru_dbviewer::browse::{Browse, Filter, Operator};
     let (_dir, profile) = fixture();
