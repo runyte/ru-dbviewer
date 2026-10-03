@@ -205,87 +205,55 @@ impl Postgres {
         if !self.usable() {
             return Err("PostgreSQL connection is retired; reconnect explicitly".into());
         }
-        let work = async {
-            let mut capture =
-                self.storage
-                    .result_with_guard(crate::result_storage::WorkGuard::new(
-                        cancel.clone(),
-                        std::time::Instant::now() + Duration::from_secs(seconds),
-                    ));
-            self.client
-                .batch_execute(if write { "BEGIN" } else { "BEGIN READ ONLY" })
-                .await
-                .map_err(error)?;
-            self.client
+        // Drop an interrupted stream before cleanup so its response receiver
+        // cannot block the driver's receipt of the rollback acknowledgement.
+        let (result, interrupted) = {
+            let work = async {
+                let mut capture =
+                    self.storage
+                        .result_with_guard(crate::result_storage::WorkGuard::new(
+                            cancel.clone(),
+                            std::time::Instant::now() + Duration::from_secs(seconds),
+                        ));
+                self.client
+                    .batch_execute(if write { "BEGIN" } else { "BEGIN READ ONLY" })
+                    .await
+                    .map_err(error)?;
+                self.client
                 .batch_execute(&format!(
                     "SET LOCAL statement_timeout='{}ms'; SET LOCAL standard_conforming_strings=on",
                     seconds * 1000
                 ))
                 .await
                 .map_err(error)?;
-            // Server preparation independently enforces a single statement before the
-            // text-result protocol executes it. This preserves every server type's text.
-            let statement = self.client.prepare(&sql).await.map_err(error)?;
-            let mut data = Data {
-                columns: statement
-                    .columns()
-                    .iter()
-                    .map(|c| Column {
-                        name: c.name().into(),
-                        kind: c.type_().name().into(),
-                    })
-                    .collect(),
-                ..Data::default()
-            };
-            if !parameters.is_empty() {
-                // Browse projections cast returned columns to text; values remain bound parameters.
-                let params = parameters
-                    .iter()
-                    .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
-                    .collect::<Vec<_>>();
-                let stream = self
-                    .client
-                    .query_raw(&statement, params)
-                    .await
-                    .map_err(error)?;
-                pin_mut!(stream);
-                while let Some(row) = stream.next().await {
-                    let row = row.map_err(error)?;
-                    if data.rows.len() >= crate::results::MAX_ROWS {
-                        data.truncated = true;
-                        return Ok(data);
-                    }
-                    let (next, cells, checkpoint) = tokio::task::spawn_blocking(move || {
-                        let checkpoint = capture.checkpoint();
-                        let cells = (0..row.len())
-                            .map(|i| {
-                                capture.check()?;
-                                row.try_get::<_, Option<&str>>(i)
-                                    .map(|text| Cell::capture(text, &mut capture))
-                                    .map_err(error)
-                            })
-                            .collect::<Result<Vec<_>>>();
-                        (capture, cells, checkpoint)
-                    })
-                    .await
-                    .map_err(|_| "PostgreSQL capture worker stopped")?;
-                    capture = next;
-                    let cells = cells?;
-                    if !data.push(cells) {
-                        tokio::task::spawn_blocking(move || capture.discard_since(checkpoint))
-                            .await
-                            .map_err(|_| "PostgreSQL capture worker stopped")??;
-                        return Ok(data);
-                    }
-                }
-                capture.check()?;
-                return Ok(data);
-            }
-            let stream = self.client.simple_query_raw(&sql).await.map_err(error)?;
-            pin_mut!(stream);
-            while let Some(item) = stream.next().await {
-                match item.map_err(error)? {
-                    SimpleQueryMessage::Row(row) => {
+                // Server preparation independently enforces a single statement before the
+                // text-result protocol executes it. This preserves every server type's text.
+                let statement = self.client.prepare(&sql).await.map_err(error)?;
+                let mut data = Data {
+                    columns: statement
+                        .columns()
+                        .iter()
+                        .map(|c| Column {
+                            name: c.name().into(),
+                            kind: c.type_().name().into(),
+                        })
+                        .collect(),
+                    ..Data::default()
+                };
+                if !parameters.is_empty() {
+                    // Browse projections cast returned columns to text; values remain bound parameters.
+                    let params = parameters
+                        .iter()
+                        .map(|s| s as &(dyn tokio_postgres::types::ToSql + Sync))
+                        .collect::<Vec<_>>();
+                    let stream = self
+                        .client
+                        .query_raw(&statement, params)
+                        .await
+                        .map_err(error)?;
+                    pin_mut!(stream);
+                    while let Some(row) = stream.next().await {
+                        let row = row.map_err(error)?;
                         if data.rows.len() >= crate::results::MAX_ROWS {
                             data.truncated = true;
                             return Ok(data);
@@ -295,9 +263,9 @@ impl Postgres {
                             let cells = (0..row.len())
                                 .map(|i| {
                                     capture.check()?;
-                                    let cell = Cell::capture(row.get(i), &mut capture);
-                                    capture.check()?;
-                                    Ok(cell)
+                                    row.try_get::<_, Option<&str>>(i)
+                                        .map(|text| Cell::capture(text, &mut capture))
+                                        .map_err(error)
                                 })
                                 .collect::<Result<Vec<_>>>();
                             (capture, cells, checkpoint)
@@ -313,20 +281,60 @@ impl Postgres {
                             return Ok(data);
                         }
                     }
-                    SimpleQueryMessage::CommandComplete(n) => data.affected = Some(n),
-                    _ => {}
+                    capture.check()?;
+                    return Ok(data);
                 }
-            }
-            capture.check()?;
-            Ok(data)
-        };
-        tokio::pin!(work);
-        let mut interrupted = false;
-        let result = tokio::select! {
-         biased;
-         _=cancel.cancelled()=>{interrupted=true;Err("Query cancelled".to_string())},
-         _=tokio::time::sleep(Duration::from_secs(seconds))=>{interrupted=true;Err("Query timed out".to_string())},
-         result=&mut work=>result,
+                let stream = self.client.simple_query_raw(&sql).await.map_err(error)?;
+                pin_mut!(stream);
+                while let Some(item) = stream.next().await {
+                    match item.map_err(error)? {
+                        SimpleQueryMessage::Row(row) => {
+                            if data.rows.len() >= crate::results::MAX_ROWS {
+                                data.truncated = true;
+                                return Ok(data);
+                            }
+                            let (next, cells, checkpoint) =
+                                tokio::task::spawn_blocking(move || {
+                                    let checkpoint = capture.checkpoint();
+                                    let cells = (0..row.len())
+                                        .map(|i| {
+                                            capture.check()?;
+                                            let cell = Cell::capture(row.get(i), &mut capture);
+                                            capture.check()?;
+                                            Ok(cell)
+                                        })
+                                        .collect::<Result<Vec<_>>>();
+                                    (capture, cells, checkpoint)
+                                })
+                                .await
+                                .map_err(|_| "PostgreSQL capture worker stopped")?;
+                            capture = next;
+                            let cells = cells?;
+                            if !data.push(cells) {
+                                tokio::task::spawn_blocking(move || {
+                                    capture.discard_since(checkpoint)
+                                })
+                                .await
+                                .map_err(|_| "PostgreSQL capture worker stopped")??;
+                                return Ok(data);
+                            }
+                        }
+                        SimpleQueryMessage::CommandComplete(n) => data.affected = Some(n),
+                        _ => {}
+                    }
+                }
+                capture.check()?;
+                Ok(data)
+            };
+            tokio::pin!(work);
+            let mut interrupted = false;
+            let result = tokio::select! {
+             biased;
+             _=cancel.cancelled()=>{interrupted=true;Err("Query cancelled".to_string())},
+             _=tokio::time::sleep(Duration::from_secs(seconds))=>{interrupted=true;Err("Query timed out".to_string())},
+             result=&mut work=>result,
+            };
+            (result, interrupted)
         };
         let capped = result.as_ref().is_ok_and(|d| d.truncated);
         if interrupted || capped {
