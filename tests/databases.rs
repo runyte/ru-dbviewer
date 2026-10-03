@@ -787,6 +787,20 @@ async fn browse_filter_contract(db: &Database, schema: &str) {
         sort: Some((0, false)),
         ..Browse::default()
     };
+    let expected_types = browse
+        .columns
+        .iter()
+        .map(|column| column.kind.as_str())
+        .collect::<Vec<_>>();
+    let refreshed = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+    assert_eq!(
+        refreshed
+            .columns
+            .iter()
+            .map(|column| column.kind.as_str())
+            .collect::<Vec<_>>(),
+        expected_types
+    );
     browse.filters.push(Filter {
         column: 2,
         op: Operator::Greater,
@@ -794,6 +808,14 @@ async fn browse_filter_contract(db: &Database, schema: &str) {
         enabled: true,
     });
     let filtered = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+    assert_eq!(
+        filtered
+            .columns
+            .iter()
+            .map(|column| column.kind.as_str())
+            .collect::<Vec<_>>(),
+        expected_types
+    );
     assert_eq!(
         filtered
             .rows

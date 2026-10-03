@@ -155,6 +155,11 @@ impl Database {
             Self::Sqlite(db) => db.execute_bound(sql, parameters, false, cancel, 30).await,
             Self::Postgres(db) => db.execute_bound(sql, parameters, false, cancel, 30).await,
         }?;
+        if matches!(self, Self::Postgres(_)) && !full.columns.is_empty() {
+            // The generated projection casts values to text only for transport.
+            // Keep the original field types for record inspection and filtering.
+            data.columns = full.columns;
+        }
         data.order_keys = keys;
         Ok(data)
     }
