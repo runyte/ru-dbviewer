@@ -143,8 +143,8 @@ class Host:
   elif method=='activity.acquire':id=f'l:{len(self.leases)+1}';self.leases[id]=p;result={'lease':id}
   elif method=='activity.release':self.leases.pop(p['lease'],None)
   else:raise AssertionError(method)
-  if self.before_reply:self.before_reply(method)
-  self.send({'type':'response','id':msg['id'],'result':result})
+  if self.before_reply:error=self.before_reply(method)
+  self.send({'type':'response','id':msg['id'],**({'error':error} if isinstance(error,dict) else {'result':result})})
  def close(self):
   self.child.stdin.close()
   try:self.child.wait(timeout=4)
@@ -243,6 +243,45 @@ class WireTests(unittest.TestCase):
   self.assertEqual(h.jobs,jobs);self.assertFalse(h.leases)
   self.assertEqual(h.state['document']['data']['uncertain'],[])
   with closing(sqlite3.connect(self.path)) as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM items').fetchone()[0],2)
+
+ def late_query_cancellation(self,trigger):
+  self.connect();h=self.h;self.good(h.invoke('mode',h.active));self.good(h.submit({'choice':'READ AND WRITE'}));self.good(h.submit({'confirmed':True}));h.wait_jobs()
+  self.good(h.invoke('query',h.active));buffer=next(reversed(h.buffers));h.buffers[buffer]="UPDATE items SET name='cancelled write'"
+  self.good(h.invoke('run',buffer=buffer));self.good(h.invoke('activate',h.active,['0']))
+  job=None;cancelled=False
+  def cancel_after_completion_starts(method):
+   nonlocal job,cancelled
+   if method=='job.create':job=next(j for j,state in h.jobs.items() if state=='running')
+   if job and method==trigger and not cancelled:
+    cancelled=True;h.send({'type':'event','event':'job.cancel_requested','sequence':'100','data':{'job':job}})
+   if cancelled and method=='job.finish' and h.jobs[job]=='succeeded':
+    # Runyte refuses succeeded after accepting cancellation, keeping the job active.
+    h.jobs[job]='running'
+    return {'code':'cancelled','message':'Cancellation already accepted'}
+  h.before_reply=cancel_after_completion_starts
+  self.good(h.submit({'confirmed':True}));h.wait_jobs()
+  self.assertTrue(cancelled);self.assertEqual(h.jobs[job],'cancelled')
+  self.assertFalse(h.leases);self.assertEqual(h.state['document']['data']['uncertain'],[])
+  self.assertIn('error',h.invoke('commit',buffer=buffer))
+  with closing(sqlite3.connect(self.path)) as db:self.assertEqual(db.execute('SELECT name FROM items ORDER BY id').fetchall(),[('first',),('second',)])
+
+ def test_cancellation_during_result_publication_rolls_back(self):
+  self.late_query_cancellation('view.publish')
+
+ def test_cancellation_during_job_finish_rolls_back(self):
+  self.late_query_cancellation('job.finish')
+
+ def test_late_connect_completion_does_not_cancel_followup_catalog(self):
+  h=self.h;cancelled=False
+  def cancel_finished_connect(method):
+   nonlocal cancelled
+   if method=='job.finish' and not cancelled:
+    cancelled=True;h.jobs['j:1']='running'
+    h.send({'type':'event','event':'job.cancel_requested','sequence':'100','data':{'job':'j:1'}})
+    return {'code':'cancelled','message':'Cancellation already accepted'}
+  h.before_reply=cancel_finished_connect;self.connect()
+  self.assertTrue(cancelled);self.assertEqual(h.jobs['j:1'],'cancelled')
+  self.assertEqual(h.jobs['j:2'],'succeeded')
 
  def test_callback_window_during_host_request(self):
   h=self.h

@@ -255,10 +255,28 @@ impl App {
                 v.published = tokio::time::Instant::now();
             }
         }
+        if let Some(cancelled) = self.settle_cancelled_result(&changed).await? {
+            state = cancelled;
+        }
         let result = self
             .rpc
             .request("job.finish", json!({"job":done.job,"state":state}))
             .await;
+        let refused_cancel = result
+            .as_ref()
+            .is_err_and(|error| error.contains("cancelled"));
+        if refused_cancel
+            && let Some(connection) = self.connections.get(&changed)
+            && connection.pending
+            && connection.lease.is_some()
+        {
+            connection.cancel.cancel();
+        }
+        // Cancellation may arrive while the terminal acknowledgement is pending.
+        let cancelled = self.settle_cancelled_result(&changed).await?;
+        if let Some(cancelled) = cancelled {
+            state = cancelled;
+        }
         if let Err(e) = result {
             if e.contains("cancelled") {
                 let _=self.rpc.request("job.finish",json!({"job":done.job,"state":if state=="outcome_unknown"{"outcome_unknown"}else{"cancelled"}})).await;
@@ -268,6 +286,22 @@ impl App {
         }
         self.rpc.untrack(&done.job);
         Ok(())
+    }
+    async fn settle_cancelled_result(&mut self, name: &str) -> Result<Option<&'static str>> {
+        let lease = self
+            .connections
+            .get(name)
+            .filter(|connection| connection.pending && connection.cancel.is_cancelled())
+            .and_then(|connection| connection.lease.clone());
+        let Some(lease) = lease else {
+            return Ok(None);
+        };
+        self.cancel_lease(&lease).await?;
+        Ok(Some(if self.saved.uncertain.iter().any(|n| n == name) {
+            "outcome_unknown"
+        } else {
+            "cancelled"
+        }))
     }
     pub(super) async fn refresh_status(&mut self, name: &str) -> Result<()> {
         let views = self
