@@ -68,6 +68,14 @@ pub fn resolve(root: &Path, text: &str) -> Result<Destination> {
             continue;
         }
         let ty = entry.file_type().map_err(|_| "Cannot read entry type")?;
+        let ty = if ty.is_symlink() {
+            match std::fs::metadata(entry.path()) {
+                Ok(metadata) => metadata.file_type(),
+                Err(_) => continue,
+            }
+        } else {
+            ty
+        };
         if ty.is_dir() || ty.is_file() {
             choices.push(entry.path());
         }
@@ -84,6 +92,46 @@ pub fn resolve(root: &Path, text: &str) -> Result<Destination> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn completion_follows_usable_symlinks_and_skips_unusable_targets() {
+        use std::{ffi::CString, os::unix::fs::symlink};
+
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        std::fs::write(root.join("target.sqlite"), b"SQLite format 3\0").unwrap();
+        std::fs::create_dir(root.join("target-directory")).unwrap();
+        std::fs::write(root.join("target-directory/child.sqlite"), b"").unwrap();
+        let fifo = CString::new(root.join("fifo").as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: fifo is a live, NUL-terminated path inside the temporary fixture.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        for (target, alias) in [
+            ("target.sqlite", "alias-file.sqlite"),
+            ("target-directory", "alias-directory"),
+            ("missing", "alias-broken"),
+            ("alias-loop", "alias-loop"),
+            ("fifo", "alias-fifo"),
+        ] {
+            symlink(target, root.join(alias)).unwrap();
+        }
+
+        let Destination::Choices(choices) = resolve(root, "alias-").unwrap() else {
+            panic!("Prefix must produce choices");
+        };
+        assert_eq!(
+            choices,
+            vec![root.join("alias-directory"), root.join("alias-file.sqlite")]
+        );
+        let Destination::File(path) = resolve(root, "alias-file.sqlite").unwrap() else {
+            panic!("File symlink must resolve to a database");
+        };
+        assert_eq!(path, root.join("target.sqlite").canonicalize().unwrap());
+        let Destination::Choices(choices) = resolve(root, "alias-directory").unwrap() else {
+            panic!("Directory symlink must be traversable");
+        };
+        assert_eq!(choices, vec![root.join("alias-directory/child.sqlite")]);
+    }
+
     #[test]
     fn absolute_relative_prefix_and_bounds() {
         let t = tempfile::tempdir().unwrap();
