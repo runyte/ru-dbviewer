@@ -75,6 +75,23 @@ class InteractiveTests(unittest.TestCase):
   self.invoke('open',rows);self.invoke('back',h.active)
   self.assertEqual(h.views[rows],original)
 
+ def test_reconnecting_page_can_cancel_its_captured_attempt(self):
+  catalog=self.connect();h=self.h;self.invoke('mode',catalog);self.submit(choice='READ AND WRITE')
+  cancellation=[]
+  def cancel_before_job_reply(method):
+   if method=='job.create':
+    h.before_reply=None;h.serial+=1;request=f'h:{h.serial}'
+    revision=h.revisions[h.active];cancellation.append((request,h.active,revision))
+    h.send({'type':'request','id':request,'method':'command.invoke','params':{'command':'cancel','context':'workspace','view':h.active,'model_revision':revision,'rows':[]}})
+  h.before_reply=cancel_before_job_reply;self.submit(confirmed=True)
+  request,view,revision=cancellation[0];reply=h.until_reply(request)
+  if 'error' in reply:
+   # Completion may win, but an unchanged loading page must authorize cancellation.
+   self.assertNotEqual(h.revisions[view],revision,reply)
+   self.assertIn('View changed',reply['error']['message'])
+  else:self.assertIn('job.cancel',h.requests)
+  h.wait_jobs()
+
  def test_reassociated_sql_uses_current_connection_generation(self):
   catalog=self.connect();h=self.h;self.invoke('query',catalog);buffer=next(reversed(h.buffers))
   self.invoke('mode',catalog);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()

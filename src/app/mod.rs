@@ -155,6 +155,11 @@ struct Connection {
     summary: String,
     affected: Option<u64>,
 }
+struct Connecting {
+    job: String,
+    cancel: CancellationToken,
+    view: String,
+}
 #[derive(Clone)]
 struct Intent {
     generation: u64,
@@ -267,7 +272,7 @@ pub struct App {
     input_source: Option<String>,
     path_pending: bool,
     path_slots: Arc<tokio::sync::Semaphore>,
-    connecting: HashMap<String, (String, CancellationToken)>,
+    connecting: HashMap<String, Connecting>,
     active: Option<String>,
     sender: mpsc::Sender<Completion>,
     receiver: mpsc::Receiver<Completion>,
@@ -793,6 +798,14 @@ impl App {
                 }
                 _ => {
                     if let Some(name) = content.name() {
+                        if ctx["command"] == "cancel"
+                            && self
+                                .connecting
+                                .get(name)
+                                .is_some_and(|attempt| ctx["view"] == attempt.view)
+                        {
+                            return Ok(name.to_owned());
+                        }
                         if let Some(generation) = ctx["view"]
                             .as_str()
                             .and_then(|id| self.views.get(id))

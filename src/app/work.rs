@@ -41,8 +41,14 @@ impl App {
         let tx = self.sender.clone();
         let j = job.clone();
         self.connections.remove(p.name());
-        self.connecting
-            .insert(p.name().into(), (job.clone(), cancel.clone()));
+        self.connecting.insert(
+            p.name().into(),
+            Connecting {
+                job: job.clone(),
+                cancel: cancel.clone(),
+                view: view.clone(),
+            },
+        );
         tokio::spawn(async move {
             let result = tokio::select! {biased;_=cancel.cancelled()=>Err("Connection cancelled".into()),r=Database::open(&p,writable,password)=>r};
             let _ = tx

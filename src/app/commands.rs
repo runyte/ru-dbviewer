@@ -129,9 +129,11 @@ impl App {
                     return Ok(None);
                 }
                 let name = self.target(&ctx)?;
-                if let Some((job, cancel)) = self.connecting.get(&name) {
-                    cancel.cancel();
-                    self.rpc.request("job.cancel", json!({"job":job})).await?;
+                if let Some(attempt) = self.connecting.get(&name) {
+                    attempt.cancel.cancel();
+                    self.rpc
+                        .request("job.cancel", json!({"job":attempt.job}))
+                        .await?;
                 }
                 if let Some(c) = self.connections.get(&name) {
                     c.cancel.cancel();

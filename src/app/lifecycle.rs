@@ -47,7 +47,7 @@ impl App {
                 let was_cancelled = self
                     .connecting
                     .remove(p.name())
-                    .is_some_and(|(_, t)| t.is_cancelled());
+                    .is_some_and(|attempt| attempt.cancel.is_cancelled());
                 let result = if was_cancelled {
                     Err("Connection cancelled".into())
                 } else {
