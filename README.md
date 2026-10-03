@@ -104,7 +104,7 @@ Local acceptance is recorded in [VALIDATION.md](VALIDATION.md).
    **Table**, **SQL**, **Database** and **Pending changes**. Headings are not actions.
    Enter performs the current primary action without a separate Activate menu entry.
    **Add database** creates a profile; **Connect** appears for a disconnected profile.
-   Pending Commit/Roll back actions retain their confirmations and connection checks.
+   Commit and Roll back settle the selected pending transaction, with connection checks before execution.
    Record/value menus focus on inspection and navigation; global `db-*` aliases
    keep database lifecycle commands available. Back never disconnects.
    On hosts supporting `view-help`, `Space ?` explains the current page:

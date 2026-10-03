@@ -49,7 +49,7 @@ const TOPICS: &[(&str, &str, &[&str])] = &[
         "value",
         "Value",
         &[
-            "This page shows one field's value. JSON is shown as an outline, and Enter expands or collapses the entry under the cursor.",
+            "This page shows one field's value. A JSON preview can appear as an outline, where Enter expands or collapses the entry under the cursor. Complete values appear as read-only text.",
             "Show raw value switches between the formatted and the raw text without asking the database again. Show full value loads the complete captured value into one read-only document, where search, selection and copying cover all of it.",
             "The labelled lines above the value give its database type and whether it is a preview or the complete value. Back returns to the record.",
         ],
@@ -59,7 +59,7 @@ const TOPICS: &[(&str, &str, &[&str])] = &[
         "Schema",
         &[
             "This page lists the selected table's columns, keys and indexes as the database describes them. Enter opens the selected entry as a record.",
-            "Back returns to the tables of this database.",
+            "Back returns to the page from which this schema was opened.",
         ],
     ),
     (
@@ -82,7 +82,7 @@ const TOPICS: &[(&str, &str, &[&str])] = &[
         "transactions",
         "Transactions",
         &[
-            "This page lists connections holding uncommitted changes. Commit and Roll back act on the selected connection's pending transaction and ask for confirmation first.",
+            "This page lists connections holding uncommitted changes. Commit and Roll back settle the selected connection's pending transaction directly, after checking that the connection is still current.",
         ],
     ),
 ];
