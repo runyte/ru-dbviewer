@@ -302,7 +302,8 @@ escaped representation: controls become `\u{hex}` and literal backslashes are
 doubled. Copying copies the displayed representation. Ordinary UTF-8 text, tabs
 and newlines remain unchanged in raw mode. NULL and empty text need no full load.
 
-SQL input is limited to 256 KiB, and encoded host/model limits can impose a smaller
+SQL input is limited to 256 KiB and 16,384 SQL tokens (excluding whitespace and
+comments; a quoted literal counts as one token), and encoded host/model limits can impose a smaller
 limit on heavily escaped content. The default query timeout is 30 seconds;
 configure `settings: {query_timeout_seconds: 60}` in the plugin entry (1–300).
 Connections have a ten-second timeout. Driver allocations for one exceptionally

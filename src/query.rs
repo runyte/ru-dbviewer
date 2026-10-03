@@ -5,8 +5,10 @@ use sqlparser::{
     dialect::{Dialect, PostgreSqlDialect, SQLiteDialect},
     keywords::Keyword,
     parser::{Parser, ParserError},
+    tokenizer::{Token, Tokenizer},
 };
 pub const MAX_SQL: usize = 256 * 1024;
+pub const MAX_SQL_TOKENS: usize = 16 * 1024;
 
 // sqlparser 0.59's SQLite infix hook unwraps malformed MATCH/REGEXP operands.
 // Forward its other overrides and identity so SQLite-specific parser paths keep
@@ -91,7 +93,7 @@ impl Dialect for CheckedSqliteDialect {
     }
 }
 
-pub fn validate(sql: &str, postgres: bool) -> Result<()> {
+fn statements(sql: &str, postgres: bool) -> Result<Vec<Statement>> {
     if sql.len() > MAX_SQL || sql.contains('\0') {
         return Err("SQL exceeds the input limit or contains NUL".into());
     }
@@ -100,8 +102,28 @@ pub fn validate(sql: &str, postgres: bool) -> Result<()> {
     } else {
         &CheckedSqliteDialect(SQLiteDialect {})
     };
-    let statements = Parser::parse_sql(dialect, sql)
+    let tokens = Tokenizer::new(dialect, sql)
+        .tokenize_with_location()
         .map_err(|_| "SQL is not supported by the statement parser".to_string())?;
+    // Parser recursion limits do not bound the depth of a left-associated AST.
+    // Bound lexical complexity before construction (and recursive AST drop).
+    if tokens
+        .iter()
+        .filter(|token| !matches!(token.token, Token::Whitespace(_)))
+        .take(MAX_SQL_TOKENS + 1)
+        .count()
+        > MAX_SQL_TOKENS
+    {
+        return Err("SQL exceeds the 16,384-token complexity limit".into());
+    }
+    Parser::new(dialect)
+        .with_tokens_with_locations(tokens)
+        .parse_statements()
+        .map_err(|_| "SQL is not supported by the statement parser".to_string())
+}
+
+pub fn validate(sql: &str, postgres: bool) -> Result<()> {
+    let statements = statements(sql, postgres)?;
     if statements.len() != 1 {
         return Err("Execute exactly one SQL statement".into());
     }
@@ -116,19 +138,17 @@ pub fn validate(sql: &str, postgres: bool) -> Result<()> {
 }
 /// SQLite changes() is undefined/stale for DDL and queries. Only DML supplies a count.
 pub fn affects_rows(sql: &str) -> bool {
-    Parser::parse_sql(&CheckedSqliteDialect(SQLiteDialect {}), sql)
-        .ok()
-        .is_some_and(|s| {
-            s.len() == 1
-                && match &s[0] {
-                    Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_) => true,
-                    Statement::Query(query) => matches!(
-                        query.body.as_ref(),
-                        SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_)
-                    ),
-                    _ => false,
-                }
-        })
+    statements(sql, false).ok().is_some_and(|s| {
+        s.len() == 1
+            && match &s[0] {
+                Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_) => true,
+                Statement::Query(query) => matches!(
+                    query.body.as_ref(),
+                    SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_)
+                ),
+                _ => false,
+            }
+    })
 }
 pub fn ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
@@ -210,5 +230,38 @@ mod tests {
         }
         assert!(affects_rows("UPDATE t SET value = body MATCH 'term'"));
         assert!(affects_rows("DELETE FROM t WHERE value REGEXP '^a'"));
+    }
+
+    #[test]
+    fn lexical_budget_rejects_flat_trees_before_ast_construction() {
+        let sql = format!("SELECT {}", vec!["1"; 131_000].join("+"));
+        assert!(sql.len() <= MAX_SQL);
+        for postgres in [false, true] {
+            assert_eq!(
+                validate(&sql, postgres).unwrap_err(),
+                "SQL exceeds the 16,384-token complexity limit"
+            );
+            // Exactly the lexical limit remains accepted, including AST drop.
+            let boundary = format!("SELECT {}", vec!["1"; MAX_SQL_TOKENS / 2].join("+"));
+            assert!(validate(&boundary, postgres).is_ok());
+            assert!(validate("SELECT 1", postgres).is_ok());
+        }
+        assert!(!affects_rows(&sql));
+    }
+
+    #[test]
+    fn lexical_budget_preserves_large_literals_and_comments() {
+        let literal = format!("SELECT '{}'", "+".repeat(MAX_SQL - 9));
+        let comment = format!("SELECT 1 /*{}*/", "+".repeat(MAX_SQL - 13));
+        assert_eq!(literal.len(), MAX_SQL);
+        assert_eq!(comment.len(), MAX_SQL);
+        for postgres in [false, true] {
+            assert!(validate(&literal, postgres).is_ok());
+            assert!(validate(&comment, postgres).is_ok());
+            assert_eq!(
+                validate("SELECT 'private-unclosed-value", postgres).unwrap_err(),
+                "SQL is not supported by the statement parser"
+            );
+        }
     }
 }

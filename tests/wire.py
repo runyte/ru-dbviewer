@@ -177,6 +177,15 @@ class WireTests(unittest.TestCase):
    self.assertIn('captured SQL',h.views[review]['title']);self.good(h.invoke('activate',review,['0']));self.good(h.submit({'confirmed':True}));h.wait_jobs()
    self.assertTrue(h.leases);self.assertIn('PENDING COMMIT',h.views[h.active]['status']['text']);self.good(h.invoke(command,h.active));h.wait_jobs();self.assertFalse(h.leases)
   c=sqlite3.connect(self.path);self.assertEqual(c.execute('select id from items order by id').fetchall(),[(1,),(2,),(4,)]);c.close();self.assertEqual(h.state['document']['data']['uncertain'],[])
+ def test_sql_complexity_is_rejected_before_job_admission(self):
+  self.connect();h=self.h;self.good(h.invoke('query',h.active));buffer=list(h.buffers)[-1]
+  jobs=len(h.jobs);h.buffers[buffer]='SELECT '+','.join(['1']*8193)
+  response=h.invoke('run',buffer=buffer)
+  self.assertIn('16,384-token complexity limit',response['error']['message'])
+  self.assertEqual(len(h.jobs),jobs)
+  h.buffers[buffer]='SELECT 42 AS still_usable'
+  self.good(h.invoke('run',buffer=buffer));h.wait_jobs()
+  self.assertEqual(h.views[h.active]['rows'][0]['cells'][0]['text'],'42')
  def test_sql_never_runs_when_review_cancelled(self):
   self.connect();h=self.h;self.good(h.invoke('mode',h.active));self.good(h.submit({'choice':'READ AND WRITE'}));self.good(h.submit({'confirmed':True}));h.wait_jobs();self.good(h.invoke('query',h.active));b=list(h.buffers)[-1];h.buffers[b]='DELETE FROM items'
   self.good(h.invoke('run',buffer=b));self.good(h.invoke('activate',h.active,['0']));self.good(h.submit({},False));c=sqlite3.connect(self.path);self.assertEqual(c.execute('select count(*) from items').fetchone()[0],2);c.close()
