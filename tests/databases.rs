@@ -35,6 +35,29 @@ fn postgres_profile(name: &str) -> Profile {
     }
 }
 
+async fn postgres_fixture_sql(sql: &str) {
+    let (client, connection) = tokio_postgres::Config::new()
+        .host("127.0.0.1")
+        .port(
+            std::env::var("DBVIEWER_TEST_PG_PORT")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        )
+        .dbname("dbviewer")
+        .user("dbviewer")
+        .password("dbviewer-test-only")
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .options("-c statement_timeout=5000")
+        .connect(tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let task = tokio::spawn(connection);
+    client.batch_execute(sql).await.unwrap();
+    drop(client);
+    task.await.unwrap().unwrap();
+}
+
 async fn cte_affected_counts_contract(db: &Database) {
     let ddl = db
         .execute(
@@ -113,6 +136,48 @@ async fn postgres_cte_writes_report_affected_counts() {
     .await
     .unwrap();
     cte_affected_counts_contract(&db).await;
+}
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_primary_key_include_is_not_an_order_key() {
+    let db = Database::open(
+        &postgres_profile("include-key"),
+        true,
+        "dbviewer-test-only".into(),
+    )
+    .await
+    .unwrap();
+    postgres_fixture_sql(
+        "CREATE TABLE browse_include(id INTEGER, payload JSON, PRIMARY KEY(id) INCLUDE(payload))",
+    )
+    .await;
+    db.execute(
+        "INSERT INTO browse_include VALUES(2,'{}'),(1,'[]')".into(),
+        true,
+        token(),
+        5,
+    )
+    .await
+    .unwrap();
+    db.settle(true).await.unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "public".into(),
+        name: "browse_include".into(),
+        kind: "table".into(),
+    };
+    assert_eq!(db.browse_keys(&table, token()).await.unwrap(), ["id"]);
+    let data = db.browse(&table, 0, token()).await.unwrap();
+    assert_eq!(
+        data.rows
+            .iter()
+            .map(|row| row[0].text.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+    db.execute("DROP TABLE browse_include".into(), true, token(), 5)
+        .await
+        .unwrap();
+    db.settle(true).await.unwrap();
 }
 #[tokio::test]
 async fn sqlite_catalog_browse_schema_and_types() {

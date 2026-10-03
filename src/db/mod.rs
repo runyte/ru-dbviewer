@@ -126,7 +126,7 @@ impl Database {
                 query::literal(&t.name)
             ),
             Self::Postgres(_) => format!(
-                "SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indisprimary AND n.nspname={} AND c.relname={} ORDER BY k.ord",
+                "SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum WHERE i.indisprimary AND k.ord <= i.indnkeyatts AND n.nspname={} AND c.relname={} ORDER BY k.ord",
                 query::literal(&t.schema),
                 query::literal(&t.name)
             ),
