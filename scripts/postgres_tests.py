@@ -16,6 +16,20 @@ def run(args, **kwargs):
 def pg(name):
     return str(Path(os.environ['PG_BIN'])/name) if os.environ.get('PG_BIN') else shutil.which(name) or name
 
+def create_database(root, port):
+    # libpq's hostaddr and service settings are independent of psql's explicit
+    # host argument. Clear every PG option, including future libpq additions.
+    env = {key: value for key, value in os.environ.items() if not key.startswith('PG')}
+    passfile = root / 'pgpass'
+    passfile.write_text('')
+    passfile.chmod(0o600)
+    env.update(HOME=str(root), PGPASSFILE=str(passfile),
+               PGSERVICEFILE=str(root / 'pg_service.conf'), PGSYSCONFDIR=str(root),
+               PGSSLMODE='disable', PGGSSENCMODE='disable', PGCONNECT_TIMEOUT='5')
+    return run([pg('psql'), '-X', '-w', '-h', root, '-p', port, '-U', 'dbviewer',
+                '-d', 'postgres', '-c', 'CREATE DATABASE dbviewer',
+                '-c', 'CREATE ROLE dbviewer_cert LOGIN'], env=env)
+
 def main():
     with tempfile.TemporaryDirectory(prefix='dbv-pg-') as directory:
         root=Path(directory); data=root/'data';password=root/'password';password.write_text('dbviewer-test-only\n');password.chmod(0o600)
@@ -34,7 +48,7 @@ def main():
         started=False
         try:
             run([pg('pg_ctl'),'-D',data,'-l',root/'server.log','-w','start']);started=True
-            run([pg('psql'),'-X','-h',root,'-p',port,'-U','dbviewer','-d','postgres','-c','CREATE DATABASE dbviewer','-c','CREATE ROLE dbviewer_cert LOGIN'])
+            create_database(root, port)
             env={**os.environ,'DBVIEWER_TEST_PG_PORT':str(port),'DBVIEWER_TEST_CA':str(root/'ca.crt'),'DBVIEWER_TEST_CLIENT_CERT':str(root/'client.crt'),'DBVIEWER_TEST_CLIENT_KEY':str(root/'client.key'),'DBVIEWER_TEST_SOCKET':str(root)}
             subprocess.run(['cargo','test','--locked','--test','databases','postgres_','--','--ignored'],cwd=ROOT,env=env,check=True)
         finally:

@@ -69,6 +69,7 @@ jobs:
           python tests/wire.py
           python tests/interactive.py
           python tests/full_values.py
+          python tests/postgres_fixture.py
           python scripts/postgres_tests.py
           RUNYTE_BIN="$PWD/.host/target/debug/runyte" python tests/native.py
           cargo llvm-cov report --summary-only --fail-under-lines 75
