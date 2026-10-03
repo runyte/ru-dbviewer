@@ -35,10 +35,17 @@ pub fn resolve(root: &Path, text: &str) -> Result<Destination> {
                 return Err("Existing file is not SQLite".into());
             }
         }
-        return path
-            .canonicalize()
-            .map(Destination::File)
-            .map_err(|_| "Cannot resolve file".into());
+        let path = path.canonicalize().map_err(|_| "Cannot resolve file")?;
+        if !path
+            .to_str()
+            .is_some_and(|text| text.len() <= 4096 && !text.chars().any(char::is_control))
+        {
+            return Err(
+                "Resolved database path must be UTF-8, at most 4096 bytes and contain no controls"
+                    .into(),
+            );
+        }
+        return Ok(Destination::File(path));
     }
     let (directory, prefix) = if path.is_dir() {
         (path.clone(), String::new())
@@ -92,6 +99,29 @@ pub fn resolve(root: &Path, text: &str) -> Result<Destination> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn resolved_files_must_be_valid_saved_profile_paths() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt, os::unix::fs::symlink};
+
+        let t = tempfile::tempdir().unwrap();
+        let cases: &[(&[u8], &str)] = &[
+            (b"line\nbreak.sqlite", "newline-alias.sqlite"),
+            // APFS rejects invalid UTF-8 filenames at creation, before resolution.
+            #[cfg(target_os = "linux")]
+            (b"invalid-\xff.sqlite", "utf8-alias.sqlite"),
+        ];
+        for &(target, alias) in cases {
+            let target = OsStr::from_bytes(target);
+            std::fs::write(t.path().join(target), b"SQLite format 3\0").unwrap();
+            symlink(target, t.path().join(alias)).unwrap();
+            assert_eq!(
+                resolve(t.path(), alias).unwrap_err(),
+                "Resolved database path must be UTF-8, at most 4096 bytes and contain no controls"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn completion_follows_usable_symlinks_and_skips_unusable_targets() {
