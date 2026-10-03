@@ -245,6 +245,7 @@ impl App {
                 },
             )
             .await?;
+        let cancellation = CancellationToken::new();
         if write {
             self.saved.uncertain.push(intent.name.clone());
             if let Err(error) = self.save().await {
@@ -256,12 +257,18 @@ impl App {
                 Err(error)=>{self.saved.uncertain.retain(|n|n!=&intent.name);self.save().await?;return Err(error);}
             };
             let lease = string(&lease, "lease")?;
-            self.rpc.track(&lease);
+            self.rpc.track_with_token(&lease, cancellation.clone());
             self.connections.get_mut(&intent.name).unwrap().lease = Some(lease);
             self.connections.get_mut(&intent.name).unwrap().expiry =
                 Some(tokio::time::Instant::now() + Duration::from_secs(590));
+            if cancellation.is_cancelled() {
+                self.release(&intent.name).await;
+                self.saved.uncertain.retain(|n| n != &intent.name);
+                self.save().await?;
+                return Err("Transaction cancelled before SQL execution".into());
+            }
         }
-        let (job, cancel) = match self.job("Execute SQL").await {
+        let (job, cancel) = match self.job_with_cancel("Execute SQL", cancellation).await {
             Ok(job) => job,
             Err(error) => {
                 if write {

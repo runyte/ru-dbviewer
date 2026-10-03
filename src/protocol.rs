@@ -186,7 +186,9 @@ impl Rpc {
         self.send(match result{Ok(job)=>json!({"type":"response","id":id,"result":{"job":job}}),Err(message)=>json!({"type":"response","id":id,"error":{"code":"invalid_argument","message":message}})})
     }
     pub fn track(&self, id: &str) -> CancellationToken {
-        let token = CancellationToken::new();
+        self.track_with_token(id, CancellationToken::new())
+    }
+    pub fn track_with_token(&self, id: &str, token: CancellationToken) -> CancellationToken {
         let mut map = self.0.cancelled.lock().unwrap();
         let mut early = self.0.early.lock().unwrap();
         if let Some(i) = early.iter().position(|x| x == id) {
@@ -421,6 +423,43 @@ mod tests {
         rpc.stop();
         while let Some(result) = requests.join_next().await {
             assert!(result.unwrap().is_err());
+        }
+    }
+
+    #[test]
+    fn linked_activity_and_job_tokens_keep_early_and_live_cancellation() {
+        let (wake, _peer) = UnixStream::pair().unwrap();
+        let (output, _receiver) = mpsc::sync_channel(OUTPUT_QUEUE);
+        let rpc = Rpc(Arc::new(Inner {
+            output,
+            wake,
+            pending: Mutex::new(HashMap::new()),
+            cancelled: Mutex::new(HashMap::new()),
+            early: Mutex::new(Vec::new()),
+            serial: AtomicU64::new(0),
+            request_order: Mutex::new(()),
+            stopped: AtomicBool::new(false),
+            slots: Semaphore::new(PLUGIN_WINDOW),
+        }));
+        for early in [true, false] {
+            for source in ["lease", "job"] {
+                if early {
+                    rpc.0.early.lock().unwrap().push(source.into());
+                }
+                let lease = rpc.track("lease");
+                let job = rpc.track_with_token("job", lease.clone());
+                if !early {
+                    // The reader signals this tracked token without the app actor.
+                    rpc.0.cancelled.lock().unwrap()[source].cancel();
+                }
+                assert!(lease.is_cancelled());
+                assert!(job.is_cancelled());
+                rpc.untrack("lease");
+                assert!(rpc.0.cancelled.lock().unwrap().contains_key("job"));
+                rpc.untrack("job");
+                assert!(rpc.0.cancelled.lock().unwrap().is_empty());
+                assert!(rpc.0.early.lock().unwrap().is_empty());
+            }
         }
     }
 }

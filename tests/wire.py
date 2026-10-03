@@ -229,6 +229,21 @@ class WireTests(unittest.TestCase):
    self.assertIn('error',h.submit({'confirmed':True}));self.assertFalse(h.leases);self.assertEqual(h.state['document']['data']['uncertain'],[])
    c=sqlite3.connect(self.path);self.assertEqual(c.execute('SELECT COUNT(*) FROM items').fetchone()[0],2);c.close()
 
+ def test_early_activity_cancellation_prevents_sql_admission(self):
+  self.connect();h=self.h;self.good(h.invoke('mode',h.active));self.good(h.submit({'choice':'READ AND WRITE'}));self.good(h.submit({'confirmed':True}));h.wait_jobs()
+  self.good(h.invoke('query',h.active));buffer=next(reversed(h.buffers));h.buffers[buffer]='DELETE FROM items'
+  self.good(h.invoke('run',buffer=buffer));self.good(h.invoke('activate',h.active,['0']));jobs=dict(h.jobs)
+  def cancel_before_acquisition_reply(method):
+   if method=='activity.acquire':
+    h.before_reply=None;lease=next(iter(h.leases))
+    h.send({'type':'event','event':'activity.cancel_requested','sequence':'100','data':{'lease':lease,'reason':'cancelled'}})
+  h.before_reply=cancel_before_acquisition_reply
+  result=h.submit({'confirmed':True})
+  self.assertIn('cancelled before SQL execution',result['error']['message'])
+  self.assertEqual(h.jobs,jobs);self.assertFalse(h.leases)
+  self.assertEqual(h.state['document']['data']['uncertain'],[])
+  with closing(sqlite3.connect(self.path)) as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM items').fetchone()[0],2)
+
  def test_callback_window_during_host_request(self):
   h=self.h
   def burst(method):

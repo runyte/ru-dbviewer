@@ -879,6 +879,13 @@ impl App {
         Ok(c.db.clone())
     }
     async fn job(&self, title: &str) -> Result<(String, CancellationToken)> {
+        self.job_with_cancel(title, CancellationToken::new()).await
+    }
+    async fn job_with_cancel(
+        &self,
+        title: &str,
+        cancel: CancellationToken,
+    ) -> Result<(String, CancellationToken)> {
         let v = self
             .rpc
             .request(
@@ -887,7 +894,7 @@ impl App {
             )
             .await?;
         let id = string(&v, "job")?;
-        let token = self.rpc.track(&id);
+        let token = self.rpc.track_with_token(&id, cancel);
         Ok((id, token))
     }
 }
