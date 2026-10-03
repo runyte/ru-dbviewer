@@ -75,10 +75,36 @@ impl Operator {
     }
 }
 fn numeric(kind: &str) -> bool {
-    let k = kind.to_ascii_lowercase();
-    ["int", "numeric", "decimal", "real", "float", "double"]
-        .iter()
-        .any(|t| k.contains(t))
+    // Type substrings also occur in point, interval, arrays, ranges and domains.
+    // Strip only declared precision/scale, then recognize scalar type names.
+    let base = kind
+        .split('(')
+        .next()
+        .unwrap_or(kind)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "int"
+            | "integer"
+            | "tinyint"
+            | "smallint"
+            | "mediumint"
+            | "bigint"
+            | "unsigned big int"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "numeric"
+            | "decimal"
+            | "dec"
+            | "real"
+            | "float"
+            | "float4"
+            | "float8"
+            | "double"
+            | "double precision"
+    )
 }
 pub fn operators(kind: &str) -> Vec<String> {
     Operator::NAMES

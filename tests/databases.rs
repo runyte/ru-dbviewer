@@ -180,6 +180,81 @@ async fn postgres_primary_key_include_is_not_an_order_key() {
     db.settle(true).await.unwrap();
 }
 #[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_nonscalar_types_use_text_filters() {
+    use ru_dbviewer::browse::{Browse, Filter, Operator, operators};
+    postgres_fixture_sql("CREATE TABLE browse_textual_types(id INTEGER PRIMARY KEY, position POINT, duration INTERVAL, sequence INTEGER[], span INT4RANGE); INSERT INTO browse_textual_types VALUES(1,'(1,2)','2 days','{1,2}','[1,3)'),(2,'(3,4)','4 days','{3,4}','[3,5)')").await;
+    let db = Database::open(
+        &postgres_profile("text-types"),
+        false,
+        "dbviewer-test-only".into(),
+    )
+    .await
+    .unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "public".into(),
+        name: "browse_textual_types".into(),
+        kind: "table".into(),
+    };
+    let original = db.browse(&table, 0, token()).await.unwrap();
+    let mut browse = Browse {
+        columns: original.columns,
+        ..Browse::default()
+    };
+    for column in 1..browse.columns.len() {
+        assert!(
+            operators(&browse.columns[column].kind)
+                .contains(&Operator::Contains.name().to_string())
+        );
+        for op in [Operator::Equal, Operator::Contains] {
+            browse.filters = vec![Filter {
+                column,
+                op,
+                value: original.rows[0][column].text.clone().unwrap(),
+                enabled: true,
+            }];
+            let filtered = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+            assert_eq!(filtered.rows.len(), 1);
+            assert_eq!(filtered.rows[0][0].text.as_deref(), Some("1"));
+        }
+    }
+    postgres_fixture_sql("DROP TABLE browse_textual_types").await;
+}
+#[tokio::test]
+async fn sqlite_declared_numeric_types_keep_numeric_filtering() {
+    use ru_dbviewer::browse::{Browse, Filter, Operator};
+    let (_dir, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup.execute_batch("CREATE TABLE numeric_types(a INTEGER,b DOUBLE PRECISION,c DECIMAL(12,3)); INSERT INTO numeric_types VALUES(2,2,2),(10,10,10)").unwrap();
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "main".into(),
+        name: "numeric_types".into(),
+        kind: "table".into(),
+    };
+    let original = db.browse(&table, 0, token()).await.unwrap();
+    let mut browse = Browse {
+        columns: original.columns,
+        ..Browse::default()
+    };
+    for column in 0..browse.columns.len() {
+        browse.filters = vec![Filter {
+            column,
+            op: Operator::Greater,
+            value: "3".into(),
+            enabled: true,
+        }];
+        let filtered = db.browse_with(&table, 0, &browse, token()).await.unwrap();
+        assert_eq!(filtered.rows.len(), 1);
+        assert_eq!(filtered.rows[0][0].text.as_deref(), Some("10"));
+    }
+}
+#[tokio::test]
 async fn sqlite_catalog_browse_schema_and_types() {
     let (_dir, p) = fixture();
     let db = Database::open(&p, false, String::new()).await.unwrap();
