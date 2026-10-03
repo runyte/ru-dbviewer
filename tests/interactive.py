@@ -35,6 +35,18 @@ class InteractiveTests(unittest.TestCase):
   self.assertIn('Filters closed',result['error']['message'])
   self.invoke('open');self.assertEqual(h.views[h.active]['title'],'[databases]')
 
+ def test_existing_sql_associations_obey_limit_and_allow_reassociation(self):
+  self.connect();h=self.h
+  for i in range(256):
+   buffer=f'b:fixture-{i}';h.buffers[buffer]='SELECT 42'
+   self.invoke('use',buffer=buffer);self.submit(choice='ledger')
+  h.buffers['b:overflow']='SELECT 99'
+  self.invoke('use',buffer='b:overflow')
+  self.assertIn('SQL association limit reached',h.submit({'choice':'ledger'})['error']['message'])
+  self.invoke('use',buffer='b:fixture-0');self.submit(choice='ledger')
+  self.invoke('run',buffer='b:fixture-0');h.wait_jobs()
+  self.assertEqual(h.views[h.active]['rows'][0]['cells'][0]['text'],'42')
+
  def test_reassociated_sql_uses_current_connection_generation(self):
   catalog=self.connect();h=self.h;self.invoke('query',catalog);buffer=next(reversed(h.buffers))
   self.invoke('mode',catalog);self.submit(choice='READ AND WRITE');self.submit(confirmed=True);h.wait_jobs()
