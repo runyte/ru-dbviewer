@@ -83,6 +83,18 @@ impl App {
         parent: Option<&View>,
         browse: Option<&crate::browse::Browse>,
     ) -> Value {
+        if let Content::FullValue {
+            title,
+            document: Some(document),
+            ..
+        } = content
+        {
+            let mut model = document.model(title, self.action_presentation, self.view_metadata);
+            if self.view_help {
+                model["help"] = json!(super::help::VALUE);
+            }
+            return model;
+        }
         let mut model = self.base_model(
             content,
             browse.map_or(

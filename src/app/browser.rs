@@ -79,11 +79,24 @@ impl App {
         self.capture_page_position(ctx).await;
         let page = self.views.get(id).ok_or("Page closed")?;
         let model = self.model_for_view(id, &page.content);
+        // Complete text already belongs to the immutable Document. Keep the same
+        // lightweight identity as initial completion, rather than a second copy.
+        let retained_model = if matches!(
+            page.content,
+            Content::FullValue {
+                document: Some(_),
+                ..
+            }
+        ) {
+            json!({"title":model["title"]})
+        } else {
+            model.clone()
+        };
         // Offsets are reusable only while the saved page's exact model is unchanged.
         let position = page
             .position
             .as_ref()
-            .filter(|(revision, _)| revision == &page.revision && page.model == model)
+            .filter(|(revision, _)| revision == &page.revision && page.model == retained_model)
             .map(|(_, selection)| selection.clone());
         if let Some(browser) = &self.browser {
             let previous = browser.page.clone();
@@ -130,7 +143,7 @@ impl App {
                 return Err(error);
             }
         }
-        self.views.get_mut(id).unwrap().model = model;
+        self.views.get_mut(id).unwrap().model = retained_model;
         if let Some(position) = position
             && ctx["pane"].is_string()
             && let Ok(current) = self

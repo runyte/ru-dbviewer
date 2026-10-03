@@ -43,14 +43,24 @@ class FullValueTests(unittest.TestCase):
   self.assertFalse(h.leases)
  def test_sql_return_restores_large_captured_document_in_same_buffer(self):
   payload='x'*1500000;self.payload(payload)
-  value=self.full(self.record());h=self.h
+  value=self.full(self.record());h=self.h;original=h.views[value]
   self.invoke('global-query',value);buffer=next(reversed(h.buffers))
   h.buffers[buffer]='SELECT 42'
   self.invoke('run',buffer=buffer);h.wait_jobs()
   self.assertNotIn('document',h.views[value])
   self.invoke('return',buffer=buffer)
   self.assertEqual(h.views[value]['document'],payload)
+  self.assertEqual(h.views[value],original)
   self.assertEqual(len(h.views),1)
+
+ def test_sql_return_preserves_complete_json_presentation(self):
+  self.payload('{"value":"'+'x'*100000+'"}');value=self.full(self.record());h=self.h
+  for _ in range(2):
+   original=h.views[value]
+   self.invoke('global-query',value);buffer=next(reversed(h.buffers));h.buffers[buffer]='SELECT 42'
+   self.invoke('run',buffer=buffer);h.wait_jobs();self.invoke('return',buffer=buffer)
+   self.assertEqual(h.views[value],original)
+   self.invoke('raw',value);h.wait_jobs()
 
  def test_preview_entry_stage_failure_and_retry_preserve_captured_source(self):
   payload='{"text":"'+('x'*150000)+'","end":"original"}';self.payload(payload)
