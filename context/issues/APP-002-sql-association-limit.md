@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-002: Associating existing SQL buffers bypasses the memory bound
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Creating a query document refuses a 257th SQL-buffer association, but `::db-use`
 unconditionally inserts existing buffers into the same map. Repeatedly opening

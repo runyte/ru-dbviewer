@@ -1,5 +1,38 @@
 # Validation register
 
+## Full reliability and performance review — 2026-10-03
+
+The complete review and issue inventory are recorded in
+[the review report](context/review-2026-10-03.md). All 26 Rust modules and related
+fixture/tooling sources were reviewed. Forty-four issue records cover application
+state/cancellation, SQL validation, SQLite/PostgreSQL metadata and connection
+handling, capture storage, allocation work and test isolation. Each correction
+has a separate issue commit on `exp`; no push, merge or release was performed.
+
+Final Linux x86-64 validation used Rust/Cargo 1.90.0, Python 3.14.7,
+cargo-llvm-cov 0.9.0 and the available local Runyte host reporting 0.3.5.
+Formatting, locked all-target Clippy with warnings denied, and Rust 1.88
+all-target checking passed. The ordinary Rust suite passed 71 cases, including
+21 SQLite cases; 13 PostgreSQL cases were run separately against each disposable
+PostgreSQL 16.15 and 17.9 fixture. Both PostgreSQL versions passed all 13 Rust
+cases and both PostgreSQL public-wire cases. Public-wire, interactive, full-value,
+fixture-isolation and native suites passed 22, 141, 12, 11 and 17 cases respectively.
+Native acceptance enabled all five current feature expectations.
+
+Fresh combined LLVM line coverage is **92.05% (6,692 / 7,270 lines)**, above the
+unchanged 75% floor. Profiles were cleared before the instrumented build and
+all external plugin processes inherited the same coverage environment.
+[Per-module coverage](context/coverage-2026-10-03.txt) is retained with the report.
+The normal debug executable was rebuilt afterward and the ordinary Rust suite
+passed again. Ten Python files, both workflow files and whitespace checks passed.
+
+No macOS, ARM64, exact-CI-pinned-host, native PostgreSQL server or packaged-release
+acceptance is claimed. Real PostgreSQL tests used temporary containers and
+private certificate/socket/data fixtures. Native cluster lifecycle fixtures do
+not substitute for running the native server launcher on CI. The detailed report
+records all review outcomes, measured allocation/storage improvements and
+remaining platform/behavior boundaries.
+
 ## macOS native fixture paths and coverage setup — 2026-09-25
 
 CI run [36106262496](https://github.com/runyte/ru-dbviewer/actions/runs/36106262496)
@@ -389,10 +422,16 @@ cargo build --locked
 python3 tests/wire.py
 python3 tests/interactive.py
 python3 tests/full_values.py
+python3 tests/postgres_fixture.py
 PG_BIN=/path/to/postgresql/bin python3 scripts/postgres_tests.py
 RUNYTE_BIN=/path/to/runyte python3 tests/native.py
 cargo llvm-cov report --summary-only --fail-under-lines 75
 ```
+
+On Linux with a cached PostgreSQL image,
+`python3 scripts/postgres_container_tests.py --image postgres:17` is the
+disposable-container alternative to the native PostgreSQL launcher. Both
+launchers also run `tests/postgres_wire.py` against their isolated fixture.
 
 Cleaning only this package before the instrumented build matters: changing
 wrapper-specific environment variables alone can reuse an uninstrumented

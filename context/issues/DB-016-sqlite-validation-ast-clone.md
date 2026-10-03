@@ -20,4 +20,5 @@ dialect and private helper explicitly prohibit AST rendering/execution.
 Validation: all seven query unit tests passed on Linux x86-64 after the fix,
 including both operators at the exact token boundary, ordinary SQLite grammar,
 redacted malformed operands and CTE classification. Non-operator examples retain
-their exact original-dialect AST equality checks. Final source re-review pending.
+their exact original-dialect AST equality checks. The dedicated independent query reviewer completed a clean source re-review;
+no remaining actionable finding was reported.

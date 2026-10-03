@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-001: A stale filter-column picker can terminate the plugin
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Submitting a filter-column choice after the owning browser closes indexes the
 removed page in `App::browse_submit` (`src/app/browsing.rs`). The unchecked map

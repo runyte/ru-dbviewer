@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-003: Failed browse changes relabel retained rows with unexecuted options
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Applying filters, sorting, or changing page size mutates the retained page's
 `Browse` settings before the new read is admitted or completes. A refused

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-007: Activity cancellation does not independently cancel running SQL
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Writable execution registers the activity lease's cancellation token but drops
 the returned handle. Its SQL worker observes a different job token. Although

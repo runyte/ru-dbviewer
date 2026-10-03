@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-006: Returning to a complete document loses metadata and duplicates text
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Initial full-value publication uses `Document::model`, but browser navigation
 rebuilds the same document through generic content presentation. Returning from

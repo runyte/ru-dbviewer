@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-004: Form validation queues blocking workers without a permit
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 `App::validate_form` in `src/app/input.rs` calls `try_acquire_owned()` on
 `path_slots`, but calls `spawn_blocking` even when acquiring a permit failed.

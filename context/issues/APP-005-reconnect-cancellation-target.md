@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-005: The reconnecting browser cannot cancel its own connection attempt
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 A mode change creates a loading catalog that inherits the old connection's
 generation, then retires that connection while opening its replacement.

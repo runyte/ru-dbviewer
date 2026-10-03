@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # APP-008: A stale PostgreSQL password prompt can reconnect a retired connection
 
-Status: fixed; independent re-review pending.
+Status: fixed; independent re-review clean.
 
 Mode selection and confirmation capture/check the current connection generation,
 but the following PostgreSQL password form stores only its profile and access
