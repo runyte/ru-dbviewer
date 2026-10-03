@@ -411,6 +411,55 @@ async fn postgres_custom_tls_files_reject_fifo_and_oversized_inputs() {
         assert!(!error.contains(path.to_str().unwrap()));
     }
 }
+async fn rejected_row_capture_contract(
+    db: &Database,
+    storage: &ru_dbviewer::result_storage::Storage,
+    pg: bool,
+) {
+    let sql = if pg {
+        "SELECT CASE WHEN n=1 THEN repeat('x',70000) WHEN n=1001 THEN repeat('y',1048576) ELSE 'small' END FROM generate_series(1,1001) AS series(n)"
+    } else {
+        "WITH RECURSIVE series(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM series WHERE n<1001) SELECT CASE WHEN n=1 THEN printf('%.*c',70000,'x') WHEN n=1001 THEN printf('%.*c',1048576,'y') ELSE 'small' END FROM series"
+    };
+    let data = db.execute(sql.into(), false, token(), 5).await.unwrap();
+    assert!(data.truncated);
+    assert_eq!(data.rows.len(), 1000);
+    assert_eq!(
+        storage.usage(),
+        (70000, 1),
+        "discarded row must not consume retained spool quota"
+    );
+    assert_eq!(
+        data.rows[0][0].load_full().await.unwrap().unwrap(),
+        "x".repeat(70000)
+    );
+    drop(data);
+    assert_eq!(storage.usage(), (0, 0));
+}
+#[tokio::test]
+async fn sqlite_row_limit_does_not_capture_discarded_values() {
+    let (directory, profile) = fixture();
+    let storage = ru_dbviewer::result_storage::Storage::new(directory.path().into());
+    let db = Database::open_with_storage(&profile, false, String::new(), storage.clone())
+        .await
+        .unwrap();
+    rejected_row_capture_contract(&db, &storage, false).await;
+}
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL: DBVIEWER_TEST_PG_PORT"]
+async fn postgres_row_limit_does_not_capture_discarded_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = ru_dbviewer::result_storage::Storage::new(directory.path().into());
+    let db = Database::open_with_storage(
+        &postgres_profile("row-cap"),
+        false,
+        "dbviewer-test-only".into(),
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    rejected_row_capture_contract(&db, &storage, true).await;
+}
 #[tokio::test]
 async fn sqlite_declared_numeric_types_keep_numeric_filtering() {
     use ru_dbviewer::browse::{Browse, Filter, Operator};

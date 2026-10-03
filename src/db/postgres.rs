@@ -251,6 +251,10 @@ impl Postgres {
                 pin_mut!(stream);
                 while let Some(row) = stream.next().await {
                     let row = row.map_err(error)?;
+                    if data.rows.len() >= crate::results::MAX_ROWS {
+                        data.truncated = true;
+                        return Ok(data);
+                    }
                     let (next, cells) = tokio::task::spawn_blocking(move || {
                         let cells = (0..row.len())
                             .map(|i| {
@@ -278,6 +282,10 @@ impl Postgres {
             while let Some(item) = stream.next().await {
                 match item.map_err(error)? {
                     SimpleQueryMessage::Row(row) => {
+                        if data.rows.len() >= crate::results::MAX_ROWS {
+                            data.truncated = true;
+                            return Ok(data);
+                        }
                         let (next, cells) = tokio::task::spawn_blocking(move || {
                             let cells = (0..row.len())
                                 .map(|i| {

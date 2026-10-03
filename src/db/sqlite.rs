@@ -129,6 +129,10 @@ impl Sqlite {
                     .query(rusqlite::params_from_iter(parameters.iter()))
                     .map_err(error)?;
                 while let Some(row) = rows.next().map_err(error)? {
+                    if data.rows.len() >= crate::results::MAX_ROWS {
+                        data.truncated = true;
+                        break;
+                    }
                     let mut cells = Vec::with_capacity(count);
                     for i in 0..count {
                         capture.check()?;
