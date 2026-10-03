@@ -45,7 +45,7 @@ impl Sqlite {
             }
             c.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
                 AuthAction::Pragma {
-                    pragma_name: "table_info" | "foreign_key_list",
+                    pragma_name: "table_info" | "table_xinfo" | "foreign_key_list",
                     ..
                 } => Authorization::Allow,
                 AuthAction::Attach { .. }

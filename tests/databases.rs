@@ -127,6 +127,52 @@ async fn sqlite_catalog_browse_schema_and_types() {
     assert!(schema.rows.len() >= 3);
 }
 #[tokio::test]
+async fn sqlite_schema_includes_generated_columns() {
+    let (_dir, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup.execute_batch("CREATE TABLE generated_columns(base INTEGER, virtual_value INTEGER GENERATED ALWAYS AS (base+1) VIRTUAL, stored_value TEXT GENERATED ALWAYS AS ('value:'||base) STORED); INSERT INTO generated_columns(base) VALUES(7)").unwrap();
+    drop(setup);
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "main".into(),
+        name: "generated_columns".into(),
+        kind: "table".into(),
+    };
+    let schema = db.schema(&table, token()).await.unwrap();
+    let columns = schema
+        .rows
+        .iter()
+        .filter(|row| row[0].text.as_deref() == Some("column"))
+        .map(|row| {
+            (
+                row[1].text.as_deref().unwrap(),
+                row[2].text.as_deref().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        [
+            ("base", "INTEGER"),
+            ("virtual_value", "INTEGER"),
+            ("stored_value", "TEXT")
+        ]
+    );
+    let data = db.browse(&table, 0, token()).await.unwrap();
+    assert_eq!(
+        data.rows[0]
+            .iter()
+            .map(|cell| cell.text.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["7", "8", "value:7"]
+    );
+}
+#[tokio::test]
 async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
     let (_dir, profile) = fixture();
     let Profile::Sqlite { path, .. } = &profile else {
