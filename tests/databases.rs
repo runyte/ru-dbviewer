@@ -30,6 +30,29 @@ async fn sqlite_catalog_browse_schema_and_types() {
     assert!(schema.rows.len() >= 3);
 }
 #[tokio::test]
+async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
+    let (_dir, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup
+        .execute_batch(
+            "CREATE TABLE sqliteXaudit(id INTEGER); CREATE TABLE sequence_owner(id INTEGER PRIMARY KEY AUTOINCREMENT)",
+        )
+        .unwrap();
+    drop(setup);
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    let tables = db.catalog(false, token()).await.unwrap();
+    assert!(tables.iter().any(|t| t.name == "sqliteXaudit"));
+    assert!(!tables.iter().any(|t| t.name == "sqlite_sequence"));
+    let tables = db.catalog(true, token()).await.unwrap();
+    assert!(tables.iter().any(|t| t.name == "sqliteXaudit"));
+    assert!(tables.iter().any(|t| t.name == "sqlite_sequence"));
+}
+#[tokio::test]
 async fn sqlite_read_only_rejects_writes_and_escape() {
     let (_d, p) = fixture();
     let db = Database::open(&p, false, String::new()).await.unwrap();

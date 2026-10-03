@@ -85,7 +85,7 @@ impl Database {
                 if system {
                     ""
                 } else {
-                    "AND name NOT LIKE 'sqlite_%'"
+                    "AND lower(substr(name,1,7)) <> 'sqlite_'"
                 }
             ),
             Self::Postgres(_) => format!(
