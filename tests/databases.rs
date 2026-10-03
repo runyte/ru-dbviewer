@@ -553,6 +553,38 @@ async fn sqlite_schema_includes_generated_columns() {
     );
 }
 #[tokio::test]
+async fn sqlite_schema_preserves_implicit_foreign_key_targets() {
+    let (_directory, profile) = fixture();
+    let Profile::Sqlite { path, .. } = &profile else {
+        unreachable!()
+    };
+    let setup = rusqlite::Connection::open(path).unwrap();
+    setup.execute_batch("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(implicit_target INTEGER REFERENCES parent, explicit_target INTEGER REFERENCES parent(id))").unwrap();
+    let db = Database::open(&profile, false, String::new())
+        .await
+        .unwrap();
+    let table = ru_dbviewer::db::Table {
+        schema: "main".into(),
+        name: "child".into(),
+        kind: "table".into(),
+    };
+    let schema = db.schema(&table, token()).await.unwrap();
+    for (column, expected) in [
+        ("implicit_target", "parent"),
+        ("explicit_target", "parent(id)"),
+    ] {
+        let row = schema
+            .rows
+            .iter()
+            .find(|row| {
+                row[0].text.as_deref() == Some("foreign key")
+                    && row[1].text.as_deref() == Some(column)
+            })
+            .unwrap();
+        assert_eq!(row[2].text.as_deref(), Some(expected));
+    }
+}
+#[tokio::test]
 async fn sqlite_catalog_preserves_user_names_resembling_system_prefix() {
     let (_dir, profile) = fixture();
     let Profile::Sqlite { path, .. } = &profile else {

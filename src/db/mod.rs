@@ -172,7 +172,7 @@ impl Database {
     pub async fn schema(&self, t: &Table, cancel: CancellationToken) -> Result<Data> {
         let sql = match self {
             Self::Sqlite(_) => format!(
-                "SELECT 'column' AS kind, name, type AS definition, CASE WHEN pk>0 THEN 'primary key #'||pk ELSE '' END AS key, \"notnull\" AS required, dflt_value AS default_value FROM pragma_table_xinfo({0}) UNION ALL SELECT 'index', name, COALESCE(sql,'automatic'),'',NULL,NULL FROM sqlite_schema WHERE type='index' AND tbl_name={0} UNION ALL SELECT 'foreign key', \"from\", \"table\"||'('||\"to\"||')', 'on update '||on_update||' on delete '||on_delete,NULL,NULL FROM pragma_foreign_key_list({0})",
+                "SELECT 'column' AS kind, name, type AS definition, CASE WHEN pk>0 THEN 'primary key #'||pk ELSE '' END AS key, \"notnull\" AS required, dflt_value AS default_value FROM pragma_table_xinfo({0}) UNION ALL SELECT 'index', name, COALESCE(sql,'automatic'),'',NULL,NULL FROM sqlite_schema WHERE type='index' AND tbl_name={0} UNION ALL SELECT 'foreign key', \"from\", \"table\"||COALESCE('('||\"to\"||')',''), 'on update '||on_update||' on delete '||on_delete,NULL,NULL FROM pragma_foreign_key_list({0})",
                 query::literal(&t.name)
             ),
             Self::Postgres(_) => format!(
