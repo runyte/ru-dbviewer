@@ -350,6 +350,68 @@ async fn postgres_open_deadline_includes_session_setup() {
     assert!(closed, "failed opening must close its driver connection");
 }
 #[tokio::test]
+#[ignore = "requires local TCP fixtures; run with the PostgreSQL fixture suite"]
+async fn postgres_custom_tls_files_reject_fifo_and_oversized_inputs() {
+    use std::{
+        ffi::CString,
+        fs::OpenOptions,
+        os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        time::Duration,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let fifo = directory.path().join("ca.fifo");
+    let path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // The path is a valid, NUL-terminated name in this fixture's private directory.
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let oversized = directory.path().join("oversized.pem");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(4 * 1024 * 1024 + 1)
+        .unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    for (path, expected) in [(&fifo, "regular file"), (&oversized, "4 MiB")] {
+        let (release, released) = std::sync::mpsc::channel();
+        let fifo = fifo.clone();
+        let cleanup = std::thread::spawn(move || {
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Release the original blocking-open implementation after its timeout.
+            // RDWR also opens immediately when the fixed implementation has no reader.
+            let _writer = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(fifo)
+                .unwrap();
+        });
+        let profile = Profile::Postgres {
+            name: "tls-files".into(),
+            host: "127.0.0.1".into(),
+            port,
+            database: "fixture".into(),
+            user: "fixture".into(),
+            plaintext: false,
+            password_env: String::new(),
+            ca: path.to_str().unwrap().into(),
+            certificate: String::new(),
+            key: String::new(),
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            Database::open(&profile, false, String::new()),
+        )
+        .await;
+        release.send(()).unwrap();
+        cleanup.join().unwrap();
+        let error = result
+            .expect("invalid TLS files must be rejected without blocking")
+            .err()
+            .expect("invalid TLS file must fail");
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains(path.to_str().unwrap()));
+    }
+}
+#[tokio::test]
 async fn sqlite_declared_numeric_types_keep_numeric_filtering() {
     use ru_dbviewer::browse::{Browse, Filter, Operator};
     let (_dir, profile) = fixture();
@@ -829,6 +891,9 @@ async fn postgres_tls_verifies_ca_and_hostname() {
         .parse()
         .unwrap();
     let ca = std::env::var("DBVIEWER_TEST_CA").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let ca_link = directory.path().join("ca-link.pem");
+    std::os::unix::fs::symlink(&ca, &ca_link).unwrap();
     let make = |host: &str, ca: String| Profile::Postgres {
         name: "tls".into(),
         host: host.into(),
@@ -842,7 +907,7 @@ async fn postgres_tls_verifies_ca_and_hostname() {
         key: String::new(),
     };
     let db = Database::open(
-        &make("localhost", ca.clone()),
+        &make("localhost", ca_link.to_str().unwrap().into()),
         false,
         "dbviewer-test-only".into(),
     )

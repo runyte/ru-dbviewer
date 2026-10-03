@@ -128,6 +128,8 @@ TCP PostgreSQL defaults to certificate **and hostname** verification. A custom
 CA PEM and client certificate/key PEM paths are supported. Plaintext TCP is an
 explicit profile option; failed TLS never silently downgrades. Unix sockets do
 not use TLS. The plugin does not read every libpq option or `.pgpass`.
+Custom PEM inputs must be regular files of at most 4 MiB each; symlinks to
+regular files are supported.
 
 Remote PostgreSQL uses the PostgreSQL network protocol, with host, port, database
 and credentials entered in its connection form. Enter a hostname such as

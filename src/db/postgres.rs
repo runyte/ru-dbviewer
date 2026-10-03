@@ -6,7 +6,8 @@ use crate::{
 };
 use futures_util::{StreamExt, pin_mut};
 use std::{
-    io::BufReader,
+    io::{Cursor, Read},
+    os::unix::fs::OpenOptionsExt,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -41,14 +42,38 @@ fn error(e: tokio_postgres::Error) -> String {
             "PostgreSQL connection failed; an attempted write may have an unknown outcome".into()
         })
 }
+fn pem_reader(path: &str, role: &str) -> Result<Cursor<Vec<u8>>> {
+    const MAX_PEM_BYTES: u64 = 4 * 1024 * 1024;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| format!("Cannot open {role}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("Cannot inspect {role}"))?;
+    if !metadata.is_file() {
+        return Err(format!("{role} must be a regular file"));
+    }
+    if metadata.len() > MAX_PEM_BYTES {
+        return Err(format!("{role} exceeds the 4 MiB limit"));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PEM_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("Cannot read {role}"))?;
+    if bytes.len() as u64 > MAX_PEM_BYTES {
+        return Err(format!("{role} exceeds the 4 MiB limit"));
+    }
+    Ok(Cursor::new(bytes))
+}
 fn tls_config(ca: &str, cert: &str, key: &str) -> Result<MakeRustlsConnect> {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
         let _ = roots.add(cert);
     }
     if !ca.is_empty() {
-        let f = std::fs::File::open(ca).map_err(|_| "Cannot open CA certificate".to_string())?;
-        for c in rustls_pemfile::certs(&mut BufReader::new(f)) {
+        for c in rustls_pemfile::certs(&mut pem_reader(ca, "CA certificate")?) {
             roots
                 .add(c.map_err(|_| "Invalid CA certificate")?)
                 .map_err(|_| "Invalid CA certificate")?;
@@ -63,12 +88,10 @@ fn tls_config(ca: &str, cert: &str, key: &str) -> Result<MakeRustlsConnect> {
     let config = if cert.is_empty() {
         builder.with_no_client_auth()
     } else {
-        let f = std::fs::File::open(cert).map_err(|_| "Cannot open client certificate")?;
-        let certificates = rustls_pemfile::certs(&mut BufReader::new(f))
+        let certificates = rustls_pemfile::certs(&mut pem_reader(cert, "client certificate")?)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| "Invalid client certificate")?;
-        let f = std::fs::File::open(key).map_err(|_| "Cannot open client key")?;
-        let key = rustls_pemfile::private_key(&mut BufReader::new(f))
+        let key = rustls_pemfile::private_key(&mut pem_reader(key, "client key")?)
             .map_err(|_| "Invalid client key")?
             .ok_or("Missing client key")?;
         builder
