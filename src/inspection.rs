@@ -14,7 +14,7 @@ pub fn model(
     collapsed: &BTreeSet<String>,
     state: &str,
 ) -> Value {
-    let parsed = if !cell.truncated {
+    let parsed = if !raw && !cell.truncated {
         cell.text.as_ref().and_then(|s| parse(s, 0, &mut 0).ok())
     } else {
         None

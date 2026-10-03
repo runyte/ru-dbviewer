@@ -138,3 +138,32 @@ fn bounded_previews_preserve_unicode_controls_null_empty_and_truncation() {
         }
     }
 }
+
+#[test]
+fn raw_json_preview_does_not_build_an_unused_tree() {
+    let text = format!("[{}]", vec![r#"{"key":0}"#; 2000].join(","));
+    let cell = ru_dbviewer::results::Cell::new(Some(text.clone()));
+    ALLOCATIONS.with(|count| count.set(Some(0)));
+    let model = ru_dbviewer::inspection::model(
+        "fixture",
+        &cell,
+        true,
+        &std::collections::BTreeSet::new(),
+        "ready",
+    );
+    let allocations = ALLOCATIONS.with(|count| count.replace(None).unwrap());
+    eprintln!("raw preview of 2,000 JSON objects: {allocations} allocations");
+    assert!(
+        allocations < 1000,
+        "raw preview made {allocations} allocations"
+    );
+    assert_eq!(
+        model["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["text"].as_str().unwrap())
+            .collect::<String>(),
+        text
+    );
+}
