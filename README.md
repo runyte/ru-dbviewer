@@ -34,7 +34,7 @@ plugins:
     args: []
     bindings: {back: "-"}
     api: runyte-1
-    runyte: ">=0.3.0, <0.4.0"
+    runyte: ">=0.4.0, <0.5.0"
     capabilities:
       - views
       - interaction
@@ -58,7 +58,7 @@ Runyte (including any persistent host), then run `::db-connect` to connect to a
 database. After rebuilding and replacing the executable at the same path,
 `:plugin-restart dbviewer` reloads it.
 
-Requires Runyte **>=0.3.0, <0.4.0**, with the stable `runyte-1` protocol. Restart
+Requires Runyte **>=0.4.0, <0.5.0**, with the stable `runyte-1` protocol. Restart
 Runyte after configuration changes; an existing persistent host must restart too.
 `:plugin-restart dbviewer` reloads the executable using the host's loaded config.
 

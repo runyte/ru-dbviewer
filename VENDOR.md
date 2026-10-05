@@ -7,12 +7,15 @@ it neither vendors a runtime SDK nor links private Runyte APIs.
 are copied unchanged from `docs/plugins/` in
 https://github.com/runyte/runyte at
 `cd711f294716a52a800d701016374026036c9b71` (MPL-2.0).
-This revision is also the native host pinned in CI; its package reports 0.3.0.
-The source pin is provenance, not a claim about a published release tag.
+The source pin is fixture provenance, not a claim about a published release tag.
+Native CI separately pins Runyte `ed379e93146a026208c9be884a7921a7d7e47356`
+and stages its 0.4.0 candidate without altering that checkout.
 
 The `Screen` and `NativeEditor` PTY harness in `tests/native.py` is adapted from
 `tests/test_native.py` in https://github.com/runyte/ru-time at
-`4e586d9316a9a3d675818e0cc75ede0c19001e0d` (MPL-2.0). The database-specific tests
+`4e586d9316a9a3d675818e0cc75ede0c19001e0d` (MPL-2.0). Its 0.4 launch
+sequence was adapted from `3e33230c42af57c0749b5f0d7c13dd31cf5ea254`.
+The database-specific tests
 and configuration are maintained here. No sibling checkout is needed at runtime.
 
 `LICENSE` is the MPL-2.0 license text from Runyte at the revision above.

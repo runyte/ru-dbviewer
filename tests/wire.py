@@ -25,7 +25,7 @@ HELLO = next(x['message'] for x in FIXTURES if x['message']['type']=='hello')
 REGISTERED = next(x['message'] for x in FIXTURES if x['message']['type']=='registered')
 
 class Host:
- def __init__(self, directory, version='0.3.0', features=(), excluded_env=()):
+ def __init__(self, directory, version='0.4.0', features=(), excluded_env=()):
   self.features=list(features);schema=copy.deepcopy(SCHEMA)
   if 'view-default-bindings' in features:schema['$defs']['command']['properties']['default_binding']={'type':'string','minLength':1,'maxLength':128}
   if 'input-path-completion' in features:schema['$defs']['inputField']['properties']['completion']=json.loads((ROOT/'fixtures/input-path-completion.json').read_text())
@@ -55,7 +55,7 @@ class Host:
   self.buffer=bytearray();self.serial=0;self.views={};self.revisions={};self.jobs={};self.inputs={};self.buffers={};self.selection=None;self.selection_sets=[];self.leases={};self.state={'revision':'s:missing','document':None};self.active=None;self.reply_log={};self.requests=[];self.stages={};self.stage_serial=0;self.cancel_commit=False;self.pending_commit=None;self.job_messages={};self.fail_once=None;self.fail_code="limit_exceeded";self.before_reply=None;self.published={}
   self.send({**HELLO,'host_version':version,'features':self.features});self.registration=self.read();self.validator.validate(self.registration)
   self.commands={x['name']:x for x in self.registration['commands']}
-  self.send({**REGISTERED,'runyte':'>=0.3.0, <0.4.0','capabilities':self.registration['required_capabilities'],'features':[f for f in self.features if f in self.registration['optional_features']]})
+  self.send({**REGISTERED,'runyte':'>=0.4.0, <0.5.0','capabilities':self.registration['required_capabilities'],'features':[f for f in self.features if f in self.registration['optional_features']]})
  def send(self,msg):self.child.stdin.write((json.dumps(msg)+'\n').encode());self.child.stdin.flush()
  def read(self):
   deadline=time.monotonic()+5

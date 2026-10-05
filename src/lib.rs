@@ -8,7 +8,7 @@ pub mod results;
 pub mod views;
 
 pub type Result<T> = std::result::Result<T, String>;
-pub const HOST_RANGE: &str = ">=0.3.0, <0.4.0";
+pub const HOST_RANGE: &str = ">=0.4.0, <0.5.0";
 pub const CAPABILITIES: &[&str] = &[
     "views",
     "interaction",

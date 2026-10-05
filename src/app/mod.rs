@@ -303,7 +303,7 @@ impl App {
             .ok_or("Missing host hello")?;
         let version = hello["host_version"].as_str().unwrap_or("");
         if hello["type"] != "hello" || hello["version"] != "runyte-1" || !supported(version) {
-            return Err("Runyte >=0.3.0, <0.4.0 is required".into());
+            return Err(format!("Runyte {HOST_RANGE} is required"));
         }
         let supported = hello["features"]
             .as_array()
@@ -911,11 +911,26 @@ fn supported(version: &str) -> bool {
     }) {
         return false;
     }
-    let Some(patch) = core.strip_prefix("0.3.") else {
+    let Some(patch) = core.strip_prefix("0.4.") else {
         return false;
     };
     !patch.is_empty()
         && (patch == "0" || !patch.starts_with('0'))
         && patch.bytes().all(|b| b.is_ascii_digit())
         && patch.parse::<u64>().is_ok()
+}
+
+#[cfg(test)]
+mod host_version_tests {
+    use super::supported;
+
+    #[test]
+    fn accepts_only_final_runyte_04_patch_releases() {
+        for version in ["0.4.0", "0.4.1", "0.4.99+build.7"] {
+            assert!(supported(version), "{version}");
+        }
+        for version in ["0.3.6", "0.5.0", "0.4.0-rc.1", "0.4.01", "0.4.0+bad/"] {
+            assert!(!supported(version), "{version}");
+        }
+    }
 }

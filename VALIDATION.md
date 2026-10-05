@@ -1,5 +1,21 @@
 # Validation register
 
+## Runyte 0.4 host migration — 2026-10-05
+
+The plugin now declares `>=0.4.0, <0.5.0`, validates that release line before
+registration, and initializes native-test workspaces separately from `--ide`
+and `--mux` launches. CI pins Runyte source `ed379e9` and stages its 0.4.0
+candidate; the unchanged public schema fixtures still trace to their original
+source revision in `VENDOR.md`.
+
+Local Linux x86-64 checks passed: `cargo fmt --check`, locked all-target Clippy
+with warnings denied, `cargo test --locked`, 22 public-wire tests, 141
+interaction tests, 12 complete-value tests, and all 17 native editor tests
+against the staged 0.4.0 host. The native run enabled row actions, complete
+values, path completion, default bindings and contextual help. macOS, ARM64,
+PostgreSQL server fixtures and the combined 75% coverage gate remain CI checks;
+this local run does not claim them.
+
 ## Full reliability and performance review — 2026-10-03
 
 The complete review and issue inventory are recorded in

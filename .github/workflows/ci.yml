@@ -49,12 +49,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: runyte/runyte
-          ref: cd711f294716a52a800d701016374026036c9b71
+          ref: ed379e93146a026208c9be884a7921a7d7e47356
           path: .host
+      - name: Prepare Runyte 0.4 candidate
+        id: host
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.host/target
+        run: python .host/docs/plugins/compatibility/candidate.py --source .host --candidate-version 0.4.0 --destination "$RUNNER_TEMP/runyte-candidate" --github-output "$GITHUB_OUTPUT"
       - name: Build pinned host
         shell: bash
-        run: |
-          cargo build --locked --manifest-path .host/Cargo.toml
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.host/target
+        run: cargo build --locked --manifest-path "${{ steps.host.outputs.source }}/Cargo.toml"
       - name: Install coverage tools
         run: |
           rustup component add llvm-tools-preview
